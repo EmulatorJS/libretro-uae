@@ -1499,7 +1499,7 @@ extern addrbank toccata_bank;
 #define STATUS_READ_RECORD_HALF 4
 
 
-void update_sndboard_sound (float clk)
+void update_sndboard_sound (double clk)
 {
 	base_event_clock = clk;
 }

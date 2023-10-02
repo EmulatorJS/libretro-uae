@@ -216,6 +216,7 @@ else ifeq ($(platform), emscripten)
    TARGET := $(TARGET_NAME)_libretro_$(platform).bc
    CFLAGS    += -DHAVE_MEMALIGN -DHAVE_ASPRINTF -I$(ZLIB_DIR)
    STATIC_LINKING=1
+   STATIC_LINKING_LINK=1
 
 # iOS
 else ifneq (,$(findstring ios,$(platform)))

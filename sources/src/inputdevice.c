@@ -5201,7 +5201,7 @@ static int handle_input_event2(int nr, int state, int max, int flags, int extra)
 		if (input_record && input_record != INPREC_RECORD_PLAYING)
 			inprec_recordevent (nr, state, max, autofire);
 		if (input_play && state && (flags & HANDLE_IE_FLAG_CANSTOPPLAYBACK)) {
-			if (inprec_realtime ()) {
+			if (inprec_realtime (false)) {
 				if (input_record && input_record != INPREC_RECORD_PLAYING)
 					inprec_recordevent (nr, state, max, autofire);
 			}
@@ -6259,7 +6259,7 @@ static void setbuttonstateall (struct uae_input_device *id, struct uae_input_dev
 	bool doit = true;
 
 	if (input_play && buttonstate)
-		inprec_realtime ();
+		inprec_realtime (false);
 	if (input_play)
 		return;
 
@@ -9552,7 +9552,7 @@ void setjoystickstate (int joy, int axis, int state, int max)
 
 	if (input_play && state) {
 		if (v1 != v2)
-			inprec_realtime ();
+			inprec_realtime (false);
 	}
 	if (input_play)
 		return;
