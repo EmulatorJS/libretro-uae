@@ -221,6 +221,7 @@ else ifeq ($(platform), emscripten)
    STATIC_LINKING_LINK=1
    ifeq ($(EMULATORJS_THREADS), 1)
       LDFLAGS += -pthread
+      CFLAGS += -pthread
       CXXFLAGS += -pthread
    endif
 
