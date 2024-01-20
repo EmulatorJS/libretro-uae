@@ -6,6 +6,8 @@ EXEEXT    :=
 TARGET_NAME := puae
 SILENT    := 0
 
+EMULATORJS_THREADS ?= 0
+
 ifeq ($(platform),)
 platform = unix
 ifeq ($(shell uname -s),)
@@ -217,6 +219,10 @@ else ifeq ($(platform), emscripten)
    CFLAGS    += -DHAVE_MEMALIGN -DHAVE_ASPRINTF -I$(ZLIB_DIR)
    STATIC_LINKING=1
    STATIC_LINKING_LINK=1
+   ifeq ($(EMULATORJS_THREADS), 1)
+      LDFLAGS += -pthread
+      CXXFLAGS += -pthread
+   endif
 
 # iOS
 else ifneq (,$(findstring ios,$(platform)))
