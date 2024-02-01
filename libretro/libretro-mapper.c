@@ -43,7 +43,7 @@ static unsigned int mouse_speed[NORMAL_JPORTS] = {0};
 int arcadia_pad_enabled[NORMAL_JPORTS] = {0};
 
 extern bool request_update_av_info;
-extern void retro_reset_soft();
+extern bool request_reset_soft;
 extern bool retro_statusbar;
 extern long vkbd_mapping_active;
 extern unsigned char width_multiplier;
@@ -104,8 +104,8 @@ int retro_ui_get_pointer_state(uint8_t port, int *px, int *py, uint8_t *pb)
       *py = input_state_cb(port, RETRO_DEVICE_LIGHTGUN, 0, RETRO_DEVICE_ID_LIGHTGUN_SCREEN_Y);
    }
 
-   *px = (int)((*px + 0x7fff) * retrow_crop / 0xffff);
-   *py = (int)((*py + 0x7fff) * retroh_crop / 0xffff);
+   *px = (int)((*px + 0x7fff) * retrow_crop / 0xffff + retrox_crop);
+   *py = (int)((*py + 0x7fff) * retroh_crop / 0xffff + retroy_crop);
 
    if (joyport_pointer_color > -1)
    {
@@ -252,7 +252,7 @@ void emu_function(int function)
                (retro_mousemode) ? "Mouse Mode" : "Joystick Mode");
          break;
       case EMU_RESET:
-         retro_reset_soft();
+         request_reset_soft = true;
          /* Statusbar notification */
          statusbar_message_show(4, "%s", "Reset");
          break;
