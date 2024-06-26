@@ -98,7 +98,8 @@ int opt_joyport_pointer_color = -1;
 unsigned int opt_dpadmouse_speed = 6;
 unsigned int opt_analogmouse = 0;
 unsigned int opt_analogmouse_deadzone = 20;
-float opt_analogmouse_speed = 1.0;
+float opt_analogmouse_speed_left = 1.0;
+float opt_analogmouse_speed_right = 1.0;
 unsigned int opt_cd32pad_options = RETROPAD_OPTIONS_DISABLED;
 unsigned int opt_retropad_options = RETROPAD_OPTIONS_DISABLED;
 char opt_joyport_order[5] = "1234";
@@ -2011,51 +2012,29 @@ static void retro_set_core_options()
       },
       {
          "puae_analogmouse_speed",
-         "Input > Analog Stick Mouse Speed",
-         "Analog Stick Mouse Speed",
-         "Mouse movement speed multiplier for analog stick.",
+         "Input > Left Analog Stick Mouse Speed",
+         "Left Analog Stick Mouse Speed",
+         "Mouse speed for left analog stick.",
          NULL,
          "input",
-         {
-            { "0.1", "10%" },
-            { "0.2", "20%" },
-            { "0.3", "30%" },
-            { "0.4", "40%" },
-            { "0.5", "50%" },
-            { "0.6", "60%" },
-            { "0.7", "70%" },
-            { "0.8", "80%" },
-            { "0.9", "90%" },
-            { "1.0", "100%" },
-            { "1.1", "110%" },
-            { "1.2", "120%" },
-            { "1.3", "130%" },
-            { "1.4", "140%" },
-            { "1.5", "150%" },
-            { "1.6", "160%" },
-            { "1.7", "170%" },
-            { "1.8", "180%" },
-            { "1.9", "190%" },
-            { "2.0", "200%" },
-            { "2.1", "210%" },
-            { "2.2", "220%" },
-            { "2.3", "230%" },
-            { "2.4", "240%" },
-            { "2.5", "250%" },
-            { "2.6", "260%" },
-            { "2.7", "270%" },
-            { "2.8", "280%" },
-            { "2.9", "290%" },
-            { "3.0", "300%" },
-            { NULL, NULL },
-         },
+         ANALOG_STICK_SPEED_OPTIONS,
+         "1.0"
+      },
+	  {
+         "puae_analogmouse_speed_right",
+         "Input > Right Analog Stick Mouse Speed",
+         "Right Analog Stick Mouse Speed",
+         "Mouse speed for right analog stick.",
+         NULL,
+         "input",
+         ANALOG_STICK_SPEED_OPTIONS,
          "1.0"
       },
       {
          "puae_dpadmouse_speed",
          "Input > D-Pad Mouse Speed",
          "D-Pad Mouse Speed",
-         "Mouse movement speed multiplier for directional pad.",
+         "Mouse speed for directional pad.",
          NULL,
          "input",
          {
@@ -4485,7 +4464,14 @@ static void update_variables(void)
    var.value = NULL;
    if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
    {
-      opt_analogmouse_speed = atof(var.value);
+      opt_analogmouse_speed_left = atof(var.value);
+   }
+
+   var.key = "puae_analogmouse_speed_right";
+   var.value = NULL;
+   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   {
+      opt_analogmouse_speed_right = atof(var.value);
    }
 
    var.key = "puae_dpadmouse_speed";
@@ -5025,7 +5011,8 @@ bool retro_disk_set_eject_state(bool ejected)
       {
          case DC_IMAGE_TYPE_HD:
          case DC_IMAGE_TYPE_WHDLOAD:
-            return false;
+            /* No-op success for hard drives */
+            return true;
          default:
             break;
       }
@@ -5113,7 +5100,19 @@ bool retro_disk_set_image_index(unsigned index)
       {
          dc->index = index;
          display_current_image(dc->labels[dc->index], false);
-         log_cb(RETRO_LOG_INFO, "Disk (%d) inserted in drive DF0: '%s'\n", dc->index+1, dc->files[dc->index]);
+
+         switch (dc->types[dc->index])
+         {
+            case DC_IMAGE_TYPE_FLOPPY:
+               log_cb(RETRO_LOG_INFO, "Disk (%d) inserted in drive DF0: '%s'\n", dc->index+1, dc->files[dc->index]);
+               break;
+            case DC_IMAGE_TYPE_CD:
+               log_cb(RETRO_LOG_INFO, "CD (%d) inserted in drive CD0: '%s'\n", dc->index+1, dc->files[dc->index]);
+               break;
+            default:
+               break;
+         }
+
          return true;
       }
    }
@@ -5770,7 +5769,7 @@ static void retro_config_kickstart(void)
 static void retro_config_harddrives(void)
 {
    char *tmp_str = NULL;
-   unsigned i    = 0;
+   int8_t i      = 0;
 
    if (!dc->count)
       return;
@@ -5814,7 +5813,7 @@ static void retro_config_harddrives(void)
       {
          /* Detect RDB */
          bool hdf_rdb = false;
-         FILE * hdf_fp;
+         FILE *hdf_fp;
          char filebuf[4];
          if ((hdf_fp = fopen(tmp_str, "r")))
          {
@@ -5843,6 +5842,14 @@ static void retro_config_harddrives(void)
       if (tmp_str)
          free(tmp_str);
       tmp_str = NULL;
+   }
+
+   for (i = dc->count - 1; i > -1; i--)
+   {
+      /* Remove hard drives from Disc Control list */
+      if (     dc_get_image_type(dc->files[i]) == DC_IMAGE_TYPE_HD
+            || dc_get_image_type(dc->files[i]) == DC_IMAGE_TYPE_WHDLOAD)
+         dc_remove_file(dc, i);
    }
 }
 
@@ -6113,7 +6120,7 @@ static char* emu_config(int config)
    {
       log_cb(RETRO_LOG_INFO, "Appending model preset: '%s'\n", custom_config_path);
 
-      FILE * custom_config_fp;
+      FILE *custom_config_fp;
       char filebuf[RETRO_PATH_MAX];
       if ((custom_config_fp = fopen(custom_config_path, "r")))
       {
@@ -6599,7 +6606,8 @@ static bool retro_create_config(void)
             {
                /* Init first disk */
                dc->index = 0;
-               dc->eject_state = false;
+               /* Don't consider hard drives as "inserted" since they can't be "ejected" */
+               dc->eject_state = true;
                display_current_image(dc->labels[0], true);
             }
 
@@ -7137,7 +7145,7 @@ static bool retro_create_config(void)
          dc_reset(dc);
 
          /* Iterate parsed file and append all rows to the temporary config */
-         FILE * configfile_custom;
+         FILE *configfile_custom;
          char filebuf[RETRO_PATH_MAX];
          if ((configfile_custom = fopen(full_path, "r")))
          {
@@ -7276,19 +7284,38 @@ static bool retro_create_config(void)
    }
 
    /* Iterate global config file and append all rows to the temporary config */
-   char configfile_global_path[RETRO_PATH_MAX];
-   path_join(configfile_global_path, retro_save_directory, LIBRETRO_PUAE_PREFIX "_global.uae");
-   if (path_is_valid(configfile_global_path))
+   char configfile_path[RETRO_PATH_MAX];
+   path_join(configfile_path, retro_save_directory, LIBRETRO_PUAE_PREFIX "_global.uae");
+   if (path_is_valid(configfile_path))
    {
-      log_cb(RETRO_LOG_INFO, "Appending global configuration: '%s'\n", configfile_global_path);
+      log_cb(RETRO_LOG_INFO, "Appending global configuration: '%s'\n", configfile_path);
 
-      FILE * configfile_global;
+      FILE *configfile;
       char filebuf[RETRO_PATH_MAX];
-      if ((configfile_global = fopen(configfile_global_path, "r")))
+      if ((configfile = fopen(configfile_path, "r")))
       {
-         while (fgets(filebuf, sizeof(filebuf), configfile_global))
+         while (fgets(filebuf, sizeof(filebuf), configfile))
             retro_config_append(filebuf);
-         fclose(configfile_global);
+         fclose(configfile);
+      }
+   }
+
+   /* Append content-specific config */
+   tmp_str = utf8_to_local_string_alloc(full_path);
+   path_remove_extension(tmp_str);
+   snprintf(configfile_path, sizeof(configfile_path), "%s%s%s%s",
+         retro_save_directory, DIR_SEP_STR, path_basename(tmp_str), ".uae");
+   if (path_is_valid(configfile_path))
+   {
+      log_cb(RETRO_LOG_INFO, "Appending content configuration: '%s'\n", configfile_path);
+
+      FILE *configfile;
+      char filebuf[RETRO_PATH_MAX];
+      if ((configfile = fopen(configfile_path, "r")))
+      {
+         while (fgets(filebuf, sizeof(filebuf), configfile))
+            retro_config_append(filebuf);
+         fclose(configfile);
       }
    }
 
@@ -7367,7 +7394,7 @@ static void retro_reset_soft(void)
 static void update_video_center_vertical(void)
 {
    int retroh_crop_normal     = (video_config & PUAE_VIDEO_DOUBLELINE) ? retroh_crop / 2 : retroh_crop;
-   int thisframe_y_adjust_new = minfirstline;
+   int thisframe_y_adjust_new = thisframe_y_adjust_old;
    int thisframe_y_adjust_cur = thisframe_y_adjust;
 
    /* Always reset default top border */
@@ -7378,7 +7405,8 @@ static void update_video_center_vertical(void)
       thisframe_y_adjust_new = thisframe_y_adjust + opt_vertical_offset;
    else if ( retro_thisframe_first_drawn_line       != retro_thisframe_last_drawn_line
          && (retro_thisframe_first_drawn_line > 0   && retro_thisframe_last_drawn_line > 0)
-         && (retro_thisframe_first_drawn_line < 150 || retro_thisframe_last_drawn_line > 150)
+         && (  (!retro_av_info_is_lace && (retro_thisframe_first_drawn_line < 150 && retro_thisframe_last_drawn_line > 150))
+            || ( retro_av_info_is_lace && (retro_thisframe_first_drawn_line < 150 || retro_thisframe_last_drawn_line > 150)))
       )
       thisframe_y_adjust_new = (retro_thisframe_last_drawn_line - retro_thisframe_first_drawn_line - retroh_crop_normal) / 2 + retro_thisframe_first_drawn_line;
    else if (retro_thisframe_first_drawn_line == -1 && retro_thisframe_last_drawn_line == -1 && thisframe_y_adjust_old != 0)
@@ -7396,7 +7424,7 @@ static void update_video_center_vertical(void)
    thisframe_y_adjust_old = thisframe_y_adjust_new;
 
    /* Corrections if top border has stuff in it, only if manually forced */
-   if (thisframe_y_adjust_new < thisframe_y_adjust)
+   if (thisframe_y_adjust_new < thisframe_y_adjust && !opt_vertical_offset_auto)
    {
       int diff = thisframe_y_adjust - thisframe_y_adjust_new;
       thisframe_y_adjust     -= diff;
@@ -7462,13 +7490,15 @@ static void update_video_center_horizontal(void)
    /* Remember the previous value */
    visible_left_border_old = visible_left_border;
 
-   /* Corrections if left border has stuff in it, only for actual fullscreen needs */
-   if (     visible_left_border_new < visible_left_border
-         && retro_thisframe_last_drawn_line - retro_thisframe_first_drawn_line > 200)
+   /* Essential correction if default left border has stuff left of it */
+   if (visible_left_border_new < visible_left_border)
    {
       int diff = visible_left_border - visible_left_border_new;
       visible_left_border     -= diff;
       visible_left_border_new -= diff;
+
+      if (visible_left_border < 93 * width_multiplier)
+         visible_left_border = visible_left_border_new = 93 * width_multiplier;
    }
 
    /* Offset adjustments */
@@ -7698,6 +7728,14 @@ static void update_audiovideo(void)
           || retro_thisframe_last_drawn_line_start  != retro_thisframe_last_drawn_line)
             retro_thisframe_counter = 1;
 
+         /* Immediate mode */
+         if (!crop_delay)
+            request_update_av_info = true;
+
+         /* Hasten the result with big enough difference in last line (last line for CD32 no disc) */
+         if (retro_thisframe_last_drawn_line_delta > 47 && retro_thisframe_last_drawn_line_delta < 189)
+            retro_thisframe_counter++;
+
          /* Do not consider too big first line deltas as necessary changes.
           * Fixes cases like Fantastic Dizzy and Lollypop screen transition */
          if (retro_thisframe_first_drawn_line_delta > 165 && retro_thisframe_last_drawn_line_delta < 2
@@ -7706,14 +7744,6 @@ static void update_audiovideo(void)
             retro_thisframe_counter = 0;
             request_update_av_info  = false;
          }
-
-         /* Hasten the result with big enough difference in last line (last line for CD32 no disc) */
-         if (retro_thisframe_last_drawn_line_delta > 47 && retro_thisframe_last_drawn_line_delta < 189)
-            retro_thisframe_counter++;
-
-         /* Immediate mode */
-         if (!crop_delay)
-            request_update_av_info = true;
 
          retro_thisframe_first_drawn_line_old = retro_thisframe_first_drawn_line;
          retro_thisframe_last_drawn_line_old  = retro_thisframe_last_drawn_line;
@@ -7800,24 +7830,46 @@ static void update_audiovideo(void)
          retro_diwstartstop_counter = 0;
 
 #if 1
-         /* Game specific hacks: */
-         /* North & South PAL */
-         if (retro_thisframe_first_drawn_line == 44 && retro_thisframe_last_drawn_line == 243
+         /* Game specific hacks */
+
+         /* North & South really is an exhausting mess due to the horizontal shift, and as a bonus every single
+          * version behaves differently, and WHDLoad version even differs depending on Cycle-exact and Fast-Forward.. */
+         /* North & South PAL floppy */
+         if (     retro_max_diwstop - retro_min_diwstart == (329 * width_multiplier)
+               && retro_thisframe_first_drawn_line == 44 && retro_thisframe_last_drawn_line == 299
                && retro_min_diwstart == (129 * width_multiplier) && retro_min_diwstart_old == retro_min_diwstart
                && retro_max_diwstop  == (458 * width_multiplier) && retro_max_diwstop_old  == (449 * width_multiplier))
          {
             locked_video_horizontal = true;
-            retro_max_diwstop = retro_max_diwstop_old;
-            log_cb(RETRO_LOG_INFO, "Horizontal centering hack for '%s' active.\n", "North & South PAL");
+            log_cb(RETRO_LOG_INFO, "Horizontal centering hack for '%s' active.\n", "North & South PAL floppy");
          }
-         /* North & South NTSC */
-         else if (retro_thisframe_first_drawn_line == 44 && retro_thisframe_last_drawn_line == 243
-               && retro_min_diwstart == (129 * width_multiplier) && retro_min_diwstart_old == (127 * width_multiplier)
-               && retro_max_diwstop  == (449 * width_multiplier) && retro_max_diwstop_old  == (447 * width_multiplier))
+         /* North & South PAL WHDLoad */
+         else if (retro_max_diwstop - retro_min_diwstart == (329 * width_multiplier)
+               && (retro_thisframe_last_drawn_line == 243 || retro_thisframe_last_drawn_line >= 298)
+               && retro_min_diwstart == (129 * width_multiplier) && retro_min_diwstart_old == retro_min_diwstart
+               && retro_max_diwstop  == (458 * width_multiplier) && retro_max_diwstop_old  == (449 * width_multiplier))
          {
             locked_video_horizontal = true;
-            retro_max_diwstop = retro_max_diwstop_old;
-            log_cb(RETRO_LOG_INFO, "Horizontal centering hack for '%s' active.\n", "North & South NTSC");
+            log_cb(RETRO_LOG_INFO, "Horizontal centering hack for '%s' active.\n", "North & South PAL WHDLoad");
+         }
+         /* North & South NTSC floppy */
+         else if (retro_max_diwstop - retro_min_diwstart == (329 * width_multiplier)
+               && (retro_thisframe_first_drawn_line ==  44 || retro_thisframe_first_drawn_line ==  43)
+               && (retro_thisframe_last_drawn_line  == 243 || retro_thisframe_last_drawn_line  >= 261)
+               && retro_min_diwstart == (129 * width_multiplier) && retro_min_diwstart_old == retro_min_diwstart
+               && retro_max_diwstop  == (458 * width_multiplier) && retro_max_diwstop_old  == (449 * width_multiplier))
+         {
+            locked_video_horizontal = true;
+            log_cb(RETRO_LOG_INFO, "Horizontal centering hack for '%s' active.\n", "North & South NTSC floppy");
+         }
+         /* North & South NTSC WHDLoad */
+         else if (retro_max_diwstop - retro_min_diwstart == (329 * width_multiplier)
+               && (retro_thisframe_last_drawn_line == 243 || retro_thisframe_last_drawn_line >= 261)
+               && retro_min_diwstart == (129 * width_multiplier) && (retro_min_diwstart_old == retro_min_diwstart || retro_min_diwstart_old == (127 * width_multiplier))
+               && (retro_max_diwstop == (449 * width_multiplier) || retro_max_diwstop == (458 * width_multiplier)) && (retro_max_diwstop_old == (447 * width_multiplier) || retro_max_diwstop_old == (449 * width_multiplier)))
+         {
+            locked_video_horizontal = true;
+            log_cb(RETRO_LOG_INFO, "Horizontal centering hack for '%s' active.\n", "North & South NTSC WHDLoad");
          }
          /* Chase HQ WHDLoad */
          else if (retro_thisframe_first_drawn_line == 50 && retro_thisframe_last_drawn_line == 249
@@ -7825,7 +7877,23 @@ static void update_audiovideo(void)
                && retro_max_diwstop  == (457 * width_multiplier) && retro_max_diwstop_old  == (449 * width_multiplier))
          {
             locked_video_horizontal = true;
-            log_cb(RETRO_LOG_INFO, "Horizontal centering hack for '%s' active.\n", "Chase HQ");
+            log_cb(RETRO_LOG_INFO, "Horizontal centering hack for '%s' active.\n", "Chase HQ WHDLoad");
+         }
+         /* Test Drive */
+         else if (retro_thisframe_first_drawn_line ==  44 && retro_thisframe_last_drawn_line  == 243
+               && retro_min_diwstart == (128 * width_multiplier) && retro_min_diwstart_old == (129 * width_multiplier)
+               && retro_max_diwstop  == (448 * width_multiplier) && retro_max_diwstop_old  == (449 * width_multiplier))
+         {
+            locked_video_horizontal = true;
+            log_cb(RETRO_LOG_INFO, "Horizontal centering hack for '%s' active.\n", "Test Drive");
+         }
+         /* Test Drive II */
+         else if (retro_thisframe_first_drawn_line == 160 && retro_thisframe_last_drawn_line  == 243
+               && retro_min_diwstart == (128 * width_multiplier) && retro_min_diwstart_old == (129 * width_multiplier)
+               && retro_max_diwstop  == (448 * width_multiplier) && retro_max_diwstop_old  == (449 * width_multiplier))
+         {
+            locked_video_horizontal = true;
+            log_cb(RETRO_LOG_INFO, "Horizontal centering hack for '%s' active.\n", "Test Drive II");
          }
          /* Toki */
          else if (retro_thisframe_first_drawn_line == 60 && retro_thisframe_last_drawn_line == 259
@@ -8308,6 +8376,7 @@ static bool retro_update_av_info(void)
    /* Timing or geometry update */
    if (change_timing)
    {
+      set_config_changed();
       new_av_info.timing.fps = retro_refresh = hz;
       environ_cb(RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO, &new_av_info);
    }

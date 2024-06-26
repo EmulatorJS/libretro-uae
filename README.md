@@ -370,7 +370,8 @@ Pre-installed WHDLoad LHA archives can be launched directly without any kind of 
 
 #### Latest changes
 
-- Downgraded WHDLoad to 18.6 due to a save related bug in 18.7
+- Updated WHDLoad to 18.9 (2023-05-04).
+- Downgraded WHDLoad to 18.6 due to a save related bug in 18.7.
 - Updated WHDLoad to the latest one (18.7 2021-10-23).
 - Support for Retroplay LHA installs.
 - Support for Arcadia installs (requires KS 1.2, `kick33180.A500` will be copied automatically).
@@ -411,6 +412,8 @@ If `puae_libretro_[model].uae` exists in RetroArch `saves` it will be appended t
 
 If `puae_libretro_global.uae` exists in RetroArch `saves` it will be appended to the configuration.
 
+If `[content].uae` exists in RetroArch `saves` it will be appended to the configuration.
+
 The final generated configuration output is available in debug level log.
 
 ***Note that the use of configuration files is no longer encouraged or necessary. The core has been modified to always use the core options as a base, so that all custom configurations will be appended to the created configuration, effectively overriding the core options. The problem with this is that changing any core option while the core is running will reset all duplicate configurations. Therefore only add configurations which will require a restart or do not exist in the core options, if you must use a custom uae. If there is an option missing that is a must have, please make an issue about it.***
@@ -442,6 +445,8 @@ If you are using RDB HDF files, please use `0,0,0,512` instead of geometry numbe
 
 ## Latest features
 
+- Lightgun/pen (sonninnos)
+- Floppy write redirect (sonninnos)
 - Large HDF support (sonninnos)
 - Full framerate double line interlace backport (sonninnos)
 - Core-based ZIP extraction with automatic M3U generation (sonninnos)
