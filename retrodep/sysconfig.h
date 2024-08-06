@@ -7,7 +7,7 @@
 
 #define DEBUGGER
 #define FILESYS /* filesys emulation */
-#define UAE_FILESYS_THREADS
+//#define UAE_FILESYS_THREADS
 #define AUTOCONFIG /* autoconfig support, fast ram, harddrives etc.. */
 //#define JIT /* JIT compiler support */
 //#define USE_JIT_FPU
@@ -191,7 +191,7 @@
 
 /* Define if you have POSIX threads libraries and header files. */
 /* #undef HAVE_PTHREAD */
-#define HAVE_PTHREAD 
+#define HAVE_PTHREAD
 
 /* Define to 1 if you have the `readdir_r' function. */
 #define HAVE_READDIR_R 1

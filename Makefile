@@ -216,7 +216,7 @@ else ifneq (,$(filter $(platform), ps3 psl1ght))
 # Emscripten
 else ifeq ($(platform), emscripten)
    TARGET := $(TARGET_NAME)_libretro_$(platform).bc
-   CFLAGS    += -DHAVE_MEMALIGN -DHAVE_ASPRINTF -I$(ZLIB_DIR)
+   CFLAGS    += -DHAVE_ASPRINTF -I$(ZLIB_DIR) -fexceptions
    STATIC_LINKING=1
    STATIC_LINKING_LINK=1
    ifeq ($(EMULATORJS_THREADS), 1)
