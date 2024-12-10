@@ -518,6 +518,8 @@ extern void log_close (FILE *f);
 extern TCHAR *write_log_get_ts(void);
 extern bool is_console_open(void);
 extern void activate_console (void);
+extern void open_console(void);
+extern void reopen_console(void);
 
 extern bool use_long_double;
 
@@ -678,6 +680,9 @@ extern bool use_long_double;
 #ifndef _istalpha
 #define _istalpha iswalpha
 #endif
+#ifndef _istxdigit
+#define _istxdigit isxdigit
+#endif
 
 #ifndef _WIN32
 #define ULONG unsigned long
@@ -738,6 +743,16 @@ typedef int64_t off64_t;
 #define UINT32 uint32_t
 typedef uint32_t uint32;
 typedef uint8_t uint8;
+
+typedef uint64_t UINT64;
+typedef uint32_t UINT32;
+typedef uint16_t UINT16;
+typedef uint8_t UINT8;
+
+typedef int64_t INT64;
+typedef int32_t INT32;
+typedef int16_t INT16;
+typedef int8_t INT8;
 
 #include "misc.h"
 

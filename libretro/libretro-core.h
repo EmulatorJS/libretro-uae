@@ -34,6 +34,9 @@ extern int retro_thisframe_last_drawn_line;
 extern int retro_min_diwstart;
 extern int retro_max_diwstop;
 extern bool retro_av_info_is_lace;
+extern bool libretro_frame_end;
+extern bool libretro_runloop_active;
+extern void libretro_do_restart(int argc, TCHAR **argv);
 
 /* File helpers functions */
 #define RETRO_PATH_MAX 512
@@ -238,6 +241,7 @@ struct puae_cart_info
 #define PUAE_VIDEO_HIRES        0x04
 #define PUAE_VIDEO_SUPERHIRES   0x08
 #define PUAE_VIDEO_DOUBLELINE   0x10
+#define PUAE_VIDEO_1x1          0x20
 
 #define PUAE_VIDEO_PAL_LO       PUAE_VIDEO_PAL
 #define PUAE_VIDEO_PAL_HI       PUAE_VIDEO_PAL|PUAE_VIDEO_HIRES
@@ -254,8 +258,8 @@ struct puae_cart_info
 #define PUAE_VIDEO_HZ_PAL       49.9204101562500000f
 #define PUAE_VIDEO_HZ_NTSC      59.8260993957519531f
 #define PUAE_VIDEO_WIDTH        720
-#define PUAE_VIDEO_HEIGHT_PAL   576
-#define PUAE_VIDEO_HEIGHT_NTSC  480
+#define PUAE_VIDEO_HEIGHT_PAL   574
+#define PUAE_VIDEO_HEIGHT_NTSC  484
 
 /* Libretro video */
 #define EMULATOR_DEF_WIDTH      PUAE_VIDEO_WIDTH
@@ -274,6 +278,11 @@ extern unsigned short int retrox_crop;
 extern unsigned short int retroy_crop;
 extern unsigned short int video_config;
 extern unsigned short int video_config_geometry;
+
+#define RESOLUTION_AUTO_NONE       0
+#define RESOLUTION_AUTO_LORES      1
+#define RESOLUTION_AUTO_HIRES      2
+#define RESOLUTION_AUTO_SUPERHIRES 3
 
 #define CROP_NONE            0
 #define CROP_MINIMUM         1

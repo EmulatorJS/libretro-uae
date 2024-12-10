@@ -47,7 +47,6 @@ extern int retro_ui_get_pointer_state(uint8_t port, int *px, int *py, uint8_t *p
 extern unsigned short int defaultw;
 extern unsigned short int defaulth;
 extern unsigned char width_multiplier;
-extern uint8_t libretro_frame_end;
 
 unsigned short int* pixbuf = NULL;
 extern char retro_temp_directory[RETRO_PATH_MAX];
@@ -616,6 +615,14 @@ void target_fixup_options (struct uae_prefs *p)
 {
    p->gfx_iscanlines = 1;
    p->gfx_pscanlines = 0;
+
+   /* Allow only full Cycle-exact with 68000 */
+   if (p->cpu_memory_cycle_exact && !p->cpu_cycle_exact && p->cpu_model < 68020)
+      p->cpu_cycle_exact = true;
+
+   /* Slow down 68020 memory Cycle-exact default clock */
+   if (!p->cpu_cycle_exact && p->cpu_memory_cycle_exact && !p->cpu_clock_multiplier && p->cpu_model == 68020)
+      p->cpu_clock_multiplier = 2 * 256;
 }
 
 /*** Input ***/
@@ -805,8 +812,8 @@ void unlockscr(struct vidbuffer *vb, int y_start, int y_end)
       retro_thisframe_last_drawn_line = -1;
 
    /* Flag that we should end the frame, return out of retro_run */
-   libretro_frame_end = 1;
-   set_special(SPCFLAG_CHECK);
+   libretro_frame_end = true;
+   set_special(1);
 
    if (lightpen_enabled)
       retro_lightpen_update();
@@ -820,7 +827,6 @@ void unlockscr(struct vidbuffer *vb, int y_start, int y_end)
    {
       retro_thisframe_first_drawn_line = thisframe_first_drawn_line = minfirstline;
       retro_thisframe_last_drawn_line  = thisframe_last_drawn_line  = minfirstline + (retroh / 2);
-      retro_max_diwstop                = max_diwstop = (min_diwstart + (352 * width_multiplier));
       gui_flicker_led(LED_CD, 0, 1);
    }
 #endif
@@ -946,6 +952,8 @@ int check_prefs_changed_gfx (void)
 
       gfxvidinfo->drawbuffer.width_allocated  = defaultw;
       gfxvidinfo->drawbuffer.height_allocated = defaulth;
+      gfxvidinfo->drawbuffer.outwidth         = defaultw;
+      gfxvidinfo->drawbuffer.outheight        = defaulth;
       gfxvidinfo->drawbuffer.rowbytes         = gfxvidinfo->drawbuffer.width_allocated * gfxvidinfo->drawbuffer.pixbytes;
 
 #if 0
@@ -1080,7 +1088,7 @@ int vsync_isdone(frame_time_t *dt)
 #endif
 }
 
-bool target_graphics_buffer_update(int monid)
+bool target_graphics_buffer_update(int monid, bool force)
 {
     return true;
 }
@@ -1107,6 +1115,8 @@ static int deskhz;
 float target_adjust_vblank_hz(int monid, float hz)
 {
 #if 1
+	/* Reset this so that `compute_vsynctime()` produces correct sound clock */
+	lof_display = 1;
 	return hz;
 #else
 	struct AmigaMonitor *mon = &AMonitors[monid];
@@ -1230,7 +1240,7 @@ struct inputdevice_functions inputdevicefunc_joystick = {
    get_joystick_flags
 };
 
-int input_get_default_joystick (struct uae_input_device *uid, int num, int port, int af, int mode, bool gp, bool joymouseswap)
+int input_get_default_joystick (struct uae_input_device *uid, int num, int port, int af, int mode, bool gp, bool joymouseswap, bool default_osk)
 {
    if (is_cd32pad(0))
    {
@@ -1330,7 +1340,7 @@ int input_get_default_joystick (struct uae_input_device *uid, int num, int port,
    return 1;
 }
 
-int input_get_default_joystick_analog (struct uae_input_device *uid, int num, int port, int af, bool gp, bool joymouseswap)
+int input_get_default_joystick_analog (struct uae_input_device *uid, int num, int port, int af, bool gp, bool joymouseswap, bool default_osk)
 {
    uid[num].eventid[ID_AXIS_OFFSET + 0][0] = port ? INPUTEVENT_JOY2_HORIZ_POT : INPUTEVENT_JOY1_HORIZ_POT;
    uid[num].eventid[ID_AXIS_OFFSET + 1][0] = port ? INPUTEVENT_JOY2_VERT_POT : INPUTEVENT_JOY1_VERT_POT;
@@ -1345,7 +1355,7 @@ int input_get_default_joystick_analog (struct uae_input_device *uid, int num, in
    return 0;
 }
 
-void target_inputdevice_unacquire(void) {}
+void target_inputdevice_unacquire(bool full) {}
 void target_inputdevice_acquire(void) {}
 
 /***************************************************************
@@ -1612,6 +1622,8 @@ void keyboard_settrans (void)
 #endif
 }
 
+bool target_osd_keyboard(int show) { return false; }
+void target_osk_control(int x, int y, int button, int buttonstate) { }
 
 /********************************************************************
     Misc fuctions
@@ -2663,7 +2675,7 @@ cdrom_file *cdrom_open(chd_file *chd)
 		return NULL;
 
 	/* allocate memory for the CD-ROM file */
-	file = xmalloc(cdrom_file, 1);
+	file = xmalloc(cdrom_file, sizeof(cdrom_file));
 	if (file == NULL)
 		return NULL;
 
@@ -3518,6 +3530,5 @@ chd_error chd_hunk_info(chd_file *cf, UINT32 hunknum, chd_codec_type *compressor
 	}
 	return CHDERR_NONE;
 }
-
 
 #endif /* WITH_CHD */

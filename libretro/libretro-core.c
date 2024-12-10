@@ -36,7 +36,8 @@
 #define utf8_to_local_string_alloc strdup
 #endif
 
-uint8_t libretro_runloop_active = 0;
+bool libretro_runloop_active = false;
+bool libretro_frame_end = false;
 unsigned short int retro_bmp[RETRO_BMP_SIZE] = {0};
 unsigned int retro_bmp_offset = 0;
 unsigned short int defaultw = EMULATOR_DEF_WIDTH / 2;
@@ -51,6 +52,7 @@ unsigned short int retroy_crop = 0;
 float aspect_ratio = 0;
 
 extern int bplcon0;
+extern int detected_screen_resolution;
 extern int diwlastword_total;
 extern int diwfirstword_total;
 extern int m68k_go(int may_quit, int resume);
@@ -70,9 +72,9 @@ static int opt_fastmem_size = -1;
 static int opt_z3mem_size = -1;
 static int opt_cpu_model = -1;
 static int opt_fpu_model = -1;
-bool opt_region_auto = true;
-bool opt_video_resolution_auto = false;
-bool opt_video_vresolution_auto = false;
+static bool opt_region_auto = true;
+static char opt_video_resolution_auto = RESOLUTION_AUTO_NONE;
+static bool opt_video_vresolution_auto = false;
 bool opt_floppy_sound_empty_mute = false;
 bool opt_floppy_multidrive = false;
 bool opt_floppy_write_redirect = false;
@@ -149,8 +151,6 @@ bool request_reset_drawing = false;
 bool request_reset_soft = false;
 bool request_reset_hard = false;
 static unsigned char request_init_custom_timer = 0;
-static unsigned char startup_init_custom_timer = 80;
-static unsigned char request_check_prefs_timer = 0;
 unsigned char crop_id = 0;
 unsigned char opt_crop_id = 0;
 unsigned char crop_mode_id = 0;
@@ -1041,7 +1041,7 @@ static void retro_set_core_options()
          "puae_cpu_compatibility",
          "System > CPU Compatibility",
          "CPU Compatibility",
-         "Some games have graphic and/or speed issues without 'Cycle-exact'. 'Cycle-exact' can be forced with '(CE)' file path tag.",
+         "Some games have graphic and/or speed issues without 'Cycle-exact'. 'Cycle-exact' can be forced with '(CE)' file path tag. (DMA/Memory) is forced to (Full) with 68000.",
          NULL,
          "system",
          {
@@ -1316,13 +1316,14 @@ static void retro_set_core_options()
          "puae_video_aspect",
          "Video > Pixel Aspect Ratio",
          "Pixel Aspect Ratio",
-         "Hotkey toggling disables this option until core restart.\n- 'PAL': 1/1 = 1.000\n- 'NTSC': 44/52 = 0.846",
+         "Hotkey toggling disables this option until core restart.\n- 'PAL': 26/25 = 1.04\n- 'NTSC': 43/50 = 0.86",
          NULL,
          "video",
          {
             { "auto", "Automatic" },
             { "PAL", NULL },
             { "NTSC", NULL },
+            { "1:1", NULL },
             { NULL, NULL },
          },
          "auto"
@@ -1331,11 +1332,13 @@ static void retro_set_core_options()
          "puae_video_resolution",
          "Video > Resolution",
          "Resolution",
-         "Output width:\n- 'Automatic' defaults to 'High' and switches to 'Super-High' when needed.",
+         "Output width:\n- 'Automatic' uses 'High' at minimum.\n- 'Automatic (Low)' allows 'Low'.\n- 'Automatic (Super-High)' sets max size already at startup.",
          NULL,
          "video",
          {
             { "auto", "Automatic" },
+            { "auto-lores", "Automatic (Low)" },
+            { "auto-superhires", "Automatic (Super-High)" },
             { "lores", "Low 360px" },
             { "hires", "High 720px" },
             { "superhires", "Super-High 1440px" },
@@ -2038,7 +2041,8 @@ static void retro_set_core_options()
          NULL,
          "input",
          {
-            { "1", "0%" },
+            { "0", "disabled" },
+            { "1", "16%" },
             { "2", "33%" },
             { "3", "50%" },
             { "4", "66%" },
@@ -3431,6 +3435,7 @@ static void update_variables(void)
 
       if      (!strcmp(var.value, "PAL"))  video_config_aspect = PUAE_VIDEO_PAL;
       else if (!strcmp(var.value, "NTSC")) video_config_aspect = PUAE_VIDEO_NTSC;
+      else if (!strcmp(var.value, "1:1"))  video_config_aspect = PUAE_VIDEO_1x1;
       else                                 video_config_aspect = 0;
 
       /* Revert if aspect ratio is locked */
@@ -3464,7 +3469,7 @@ static void update_variables(void)
    var.value = NULL;
    if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
    {
-      opt_video_resolution_auto = false;
+      opt_video_resolution_auto = RESOLUTION_AUTO_NONE;
 
       if (!strcmp(var.value, "lores"))
       {
@@ -3493,9 +3498,13 @@ static void update_variables(void)
          if (libretro_runloop_active)
             changed_prefs.gfx_resolution = RES_SUPERHIRES;
       }
-      else if (!strcmp(var.value, "auto"))
+      else if (!strcmp(var.value, "auto") || !strcmp(var.value, "auto-lores") || !strcmp(var.value, "auto-superhires"))
       {
-         opt_video_resolution_auto = true;
+         opt_video_resolution_auto = RESOLUTION_AUTO_HIRES;
+         if (!strcmp(var.value, "auto-lores"))
+            opt_video_resolution_auto = RESOLUTION_AUTO_LORES;
+         else if (!strcmp(var.value, "auto-superhires"))
+            opt_video_resolution_auto = RESOLUTION_AUTO_SUPERHIRES;
 
          if (video_config_old & PUAE_VIDEO_SUPERHIRES)
          {
@@ -4904,6 +4913,7 @@ static void update_variables(void)
    request_update_av_info = true;
 
    /* Always trigger changed prefs */
+   target_fixup_options(&changed_prefs);
    set_config_changed();
    device_check_config();
 
@@ -5291,22 +5301,20 @@ void retro_init(void)
    memset(retro_bmp, 0, sizeof(retro_bmp));
    init_output_audio_buffer(2048);
 
-   libretro_runloop_active = 0;
+   libretro_runloop_active = false;
    update_variables();
 }
 
 void retro_deinit(void)
 {
+   leave_program();
+
    /* Clean the M3U storage */
    if (dc)
       dc_free(dc);
 
    /* Clean dynamic cartridge info */
    free_puae_carts();
-
-   /* Clean ZIP temp */
-   if (!string_is_empty(retro_temp_directory) && path_is_directory(retro_temp_directory))
-      remove_recurse(retro_temp_directory);
 
    /* Free buffers used by libretro-graph */
    libretro_graph_free();
@@ -5316,13 +5324,6 @@ void retro_deinit(void)
 
    /* 'Reset' troublesome static variables */
    pix_bytes_initialized = false;
-   cpu_cycle_exact_force = false;
-   automatic_sound_filter_type_update_timer = 0;
-   fake_ntsc = false;
-   real_ntsc = false;
-   forced_video = -1;
-   locked_video_horizontal = false;
-   opt_aspect_ratio_locked = false;
    libretro_supports_bitmasks = false;
    libretro_supports_ff_override = false;
    libretro_supports_option_categories = false;
@@ -5392,26 +5393,32 @@ void retro_get_system_info(struct retro_system_info *info)
 
 float retro_get_aspect_ratio(unsigned int width, unsigned int height, bool pixel_aspect)
 {
-   float ar  = 1;
-   float par = 1;
+   double ar  = 1;
+   double par = 1;
 
    if (video_config_geometry & PUAE_VIDEO_NTSC || video_config_aspect == PUAE_VIDEO_NTSC)
-      par = (float)44.0 / (float)52.0;
-   ar = ((float)width / (float)height) * par;
+      par = 28512.0f / 33173.0f; /* 43:50 */
+   else if (video_config_geometry & PUAE_VIDEO_PAL || video_config_aspect == PUAE_VIDEO_PAL)
+      par = 9600000.0f / 9221927.0f; /* 26:25 */
+
+   if (video_config_aspect == PUAE_VIDEO_1x1)
+      par = 1;
+
+   ar = ((double)width / (double)height) * par;
 
    if (video_config_geometry & PUAE_VIDEO_DOUBLELINE)
    {
       if (video_config_geometry & PUAE_VIDEO_HIRES)
          ;
       else if (video_config_geometry & PUAE_VIDEO_SUPERHIRES)
-         ar /= 2;
+         ar /= 2.0f;
    }
    else
    {
       if (video_config_geometry & PUAE_VIDEO_HIRES)
-         ar /= 2;
+         ar /= 2.0f;
       else if (video_config_geometry & PUAE_VIDEO_SUPERHIRES)
-         ar /= 4;
+         ar /= 4.0f;
    }
 
    if (pixel_aspect)
@@ -5429,6 +5436,10 @@ static float retro_default_refresh(void)
 
 void retro_get_system_av_info(struct retro_system_av_info *info)
 {
+   /* Prevent video reinits on geometry increase */
+   if (opt_video_resolution_auto == RESOLUTION_AUTO_SUPERHIRES)
+      retrow_max = EMULATOR_DEF_WIDTH * 2;
+
    info->geometry.base_width   = retrow;
    info->geometry.base_height  = retroh;
    info->geometry.max_width    = retrow_max;
@@ -6021,7 +6032,7 @@ static void whdload_quitkey(void)
       return;
 
    log_cb(RETRO_LOG_INFO, "WHDLoad QuitKey triggered..\n");
-   libretro_runloop_active = 0;
+   libretro_runloop_active = false;
 
    retro_key_down(RETROK_KP_MINUS);
    for (i = 0; i < 2; i++)
@@ -6031,7 +6042,7 @@ static void whdload_quitkey(void)
    for (i = 0; i < retro_refresh * 2; i++)
       m68k_go(1, 1);
 
-   libretro_runloop_active = 1;
+   libretro_runloop_active = true;
 }
 
 static char* emu_config_string(char *mode, int config)
@@ -7380,7 +7391,7 @@ static void retro_reset_hard(void)
    locked_video_horizontal = false;
    update_variables();
    retro_create_config();
-   uae_restart(0, NULL); /* opengui, cfgfile */
+   uae_restart(&currprefs, 0, NULL); /* currprefs, opengui, cfgfile */
 }
 
 static void retro_reset_soft(void)
@@ -7583,24 +7594,38 @@ static void update_audiovideo(void)
    /* Automatic video resolution */
    if (opt_video_resolution_auto && retro_min_diwstart != MAX_STOP)
    {
-      int current_resolution   = GET_RES_DENISE (bplcon0);
+      int current_resolution   = detected_screen_resolution;
       bool request_init_custom = false;
 #if 0
       printf("BPLCON0: %x, %d, %d-%d, %d-%d\n", bplcon0, current_resolution, diwfirstword_total, diwlastword_total, retro_min_diwstart, retro_max_diwstop);
 #endif
+      if (opt_video_resolution_auto == RESOLUTION_AUTO_SUPERHIRES)
+         opt_video_resolution_auto = RESOLUTION_AUTO_HIRES;
 
       /* Super Skidmarks force to SuperHires */
-      if (current_resolution == 1 && bplcon0 == 0xC201
+      if (current_resolution == RES_HIRES && bplcon0 == 0xC201
             && (retro_min_diwstart == 322 || retro_min_diwstart == 644)
             && (diwlastword_total == 898 || diwlastword_total == 1796))
-         current_resolution = 2;
-      /* Lores force to Hires */
-      else if (current_resolution == 0)
-         current_resolution = 1;
+         current_resolution = RES_SUPERHIRES;
+      /* Lores force to Hires in 'auto' */
+      else if (opt_video_resolution_auto == RESOLUTION_AUTO_HIRES && current_resolution == 0)
+         current_resolution = RES_HIRES;
+
+      /* Ignore Lores spikes in Lemmings */
+      if (     opt_video_resolution_auto == RESOLUTION_AUTO_LORES
+            && changed_prefs.gfx_resolution == RES_HIRES
+            && current_resolution == RES_LORES
+            && bplcon0 == (BEAMCON0_HARDDIS | BEAMCON0_VARVSYEN)
+         )
+         current_resolution = -1;
+
+      /* Ignore always */
+      if (!bplcon0 || bplcon0 & BEAMCON0_CSCBEN)
+         current_resolution = -1;
 
       switch (current_resolution)
       {
-         case 1:
+         case RES_HIRES:
             if (!(video_config & PUAE_VIDEO_HIRES))
             {
                changed_prefs.gfx_resolution = RES_HIRES;
@@ -7611,7 +7636,7 @@ static void update_audiovideo(void)
                request_init_custom = true;
             }
             break;
-         case 2:
+         case RES_SUPERHIRES:
             if (!(video_config & PUAE_VIDEO_SUPERHIRES))
             {
                changed_prefs.gfx_resolution = RES_SUPERHIRES;
@@ -7619,6 +7644,17 @@ static void update_audiovideo(void)
                video_config &= ~PUAE_VIDEO_HIRES;
                defaultw = retrow = PUAE_VIDEO_WIDTH * 2;
                retro_max_diwlastword = retro_max_diwlastword_hires * 2;
+               request_init_custom = true;
+            }
+            break;
+         case RES_LORES:
+            if ((video_config & PUAE_VIDEO_HIRES) || (video_config & PUAE_VIDEO_SUPERHIRES))
+            {
+               changed_prefs.gfx_resolution = RES_LORES;
+               video_config &= ~PUAE_VIDEO_HIRES;
+               video_config &= ~PUAE_VIDEO_SUPERHIRES;
+               defaultw = retrow = PUAE_VIDEO_WIDTH / 2;
+               retro_max_diwlastword = retro_max_diwlastword_hires / 2;
                request_init_custom = true;
             }
             break;
@@ -7728,8 +7764,8 @@ static void update_audiovideo(void)
           || retro_thisframe_last_drawn_line_start  != retro_thisframe_last_drawn_line)
             retro_thisframe_counter = 1;
 
-         /* Immediate mode */
-         if (!crop_delay)
+         /* Immediate mode, but not when interlaced */
+         if (!crop_delay && !retro_av_info_is_lace)
             request_update_av_info = true;
 
          /* Hasten the result with big enough difference in last line (last line for CD32 no disc) */
@@ -8152,40 +8188,6 @@ static bool retro_update_av_info(void)
          && video_config_aspect == PUAE_VIDEO_NTSC)
       opt_statusbar_position_offset += (PUAE_VIDEO_HEIGHT_PAL - PUAE_VIDEO_HEIGHT_NTSC) / ((video_config_geometry & PUAE_VIDEO_DOUBLELINE) ? 1 : 2);
 
-   /* Compensate for interlace, aargh */
-   if (opt_statusbar_position >= 0 && !real_ntsc && !fake_ntsc)
-   {
-      if (video_config_geometry & PUAE_VIDEO_DOUBLELINE)
-      {
-         if (video_config_geometry & PUAE_VIDEO_PAL)
-         {
-            opt_statusbar_position -= 0 - (1 * islace);
-            opt_statusbar_position_offset += 2 + (1 * islace);
-         }
-         else
-         {
-            opt_statusbar_position -= 2 + (1 * islace);
-            opt_statusbar_position_offset += 2 + (1 * islace);
-         }
-      }
-      else
-      {
-         if (video_config_geometry & PUAE_VIDEO_PAL)
-         {
-            opt_statusbar_position = 0;
-            opt_statusbar_position_offset += 1 + islace;
-         }
-         else
-         {
-            opt_statusbar_position -= 1 + islace;
-            opt_statusbar_position_offset += 1 + islace;
-         }
-      }
-
-      if (opt_statusbar_position < 0)
-         opt_statusbar_position = 0;
-   }
-
 #if 0
    printf("statusbar:%3d old:%3d offset:%3d, defaulth:%d retroh:%d\n", opt_statusbar_position, opt_statusbar_position_old, opt_statusbar_position_offset, defaulth, retroh);
 #endif
@@ -8323,6 +8325,8 @@ static bool retro_update_av_info(void)
          retroh_crop = retroh;
 
       retrow_crop = (retrow_crop < 320) ? 320 : retrow_crop;
+      /* Even widths only */
+      retrow_crop = (int)(retrow_crop / 2) * 2;
       retrow_crop *= width_multiplier;
       if (retrow_crop > retrow)
          retrow_crop = retrow;
@@ -8423,28 +8427,6 @@ void retro_run(void)
    input_poll_cb();
    retro_poll_event();
 
-   /* 4.9.0 caused startup audio rate miscalculation without this hack.. (?!)
-    * Rather this than doing `lof_display = lof_store;` in `VPOSW()` inside `lof_changing`
-    * Or maybe not.. */
-   if (0 && !request_init_custom_timer && startup_init_custom_timer > 0)
-   {
-      startup_init_custom_timer--;
-      if (startup_init_custom_timer == 0)
-         init_custom();
-   }
-
-   /* Refresh CPU prefs */
-   if (request_check_prefs_timer > 0)
-   {
-      request_check_prefs_timer--;
-      if (request_check_prefs_timer == 0)
-      {
-         update_variables();
-         set_config_changed();
-         device_check_config();
-      }
-   }
-
    /* Prevent serialize on startup frames */
    if (save_state_grace > 0)
       save_state_grace--;
@@ -8519,17 +8501,6 @@ void retro_run(void)
    if ((!retro_statusbar && opt_statusbar & STATUSBAR_MESSAGES && statusbar_message_timer) || retro_statusbar)
       print_statusbar();
 
-   /* Maximum 288p/576p PAL shenanigans:
-    * Mask the last line(s), since UAE does not refresh the last line,
-    * and even internal OSD leaves trails */
-   if (video_config & PUAE_VIDEO_PAL)
-   {
-      if (video_config & PUAE_VIDEO_DOUBLELINE)
-         draw_hline(0, 574, retrow, 2, 0);
-      else
-         draw_hline(0, 287, retrow, 1, 0);
-   }
-
 upload:
    video_cb(retro_bmp + retro_bmp_offset, retrow_crop, retroh_crop, retrow << (pix_bytes >> 1));
    upload_output_audio_buffer();
@@ -8591,7 +8562,7 @@ bool retro_load_game(const struct retro_game_info *info)
    /* Run emulation first pass */
    restart_pending = m68k_go(1, 0);
    /* > We are now ready to enter the run loop */
-   libretro_runloop_active = 1;
+   libretro_runloop_active = true;
 
    /* Force check for redirected save disks */
    floppy_open_redirect(-1);
@@ -8657,6 +8628,10 @@ void retro_unload_game(void)
    /* Close redirected save disks */
    floppy_close_redirect(-1);
 
+   /* Clean ZIP temp */
+   if (!string_is_empty(retro_temp_directory) && path_is_directory(retro_temp_directory))
+      remove_recurse(retro_temp_directory);
+
    /* Ensure save state de-serialization file
     * is closed/NULL
     * Note: Have to do this here (not in retro_deinit())
@@ -8667,9 +8642,13 @@ void retro_unload_game(void)
       retro_deserialize_file = NULL;
    }
 
-   leave_program();
-
-   libretro_runloop_active = 0;
+   cpu_cycle_exact_force = false;
+   automatic_sound_filter_type_update_timer = 0;
+   fake_ntsc = false;
+   real_ntsc = false;
+   forced_video = -1;
+   locked_video_horizontal = false;
+   opt_aspect_ratio_locked = false;
 }
 
 unsigned retro_get_region(void)
@@ -8736,11 +8715,6 @@ bool retro_unserialize(const void *data_, size_t size)
     *   unknown error */
    if (!savestate_state)
    {
-#if 0
-      /* Savestates also save CPU prefs, therefore force core options, but skip it for now */
-      request_check_prefs_timer = 4;
-#endif
-
       if (retro_deserialize_file)
       {
          zfile_fclose(retro_deserialize_file);
@@ -8776,7 +8750,7 @@ bool retro_unserialize(const void *data_, size_t size)
              *   us call m68k_go() without accessing frontend
              *   features - specifically, it disables the audio
              *   callback functionality */
-            libretro_runloop_active = 0;
+            libretro_runloop_active = false;
             while (savestate_state && (frame_counter < max_frames))
             {
                /* Note that retro_deserialize_file will be
@@ -8785,7 +8759,7 @@ bool retro_unserialize(const void *data_, size_t size)
                restart_pending = m68k_go(1, 1);
                frame_counter++;
             }
-            libretro_runloop_active = 1;
+            libretro_runloop_active = true;
 
             /* If the above while loop times out, then
              * everything is completely broken. We cannot

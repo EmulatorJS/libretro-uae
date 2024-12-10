@@ -1,6 +1,6 @@
 # PUAE LIBRETRO
 
-Based on WinUAE 5.0.0, git commit `975a167c7636d563db1c8b3292f690b6f30e71d2`
+Based on WinUAE 5.3.0, git commit `5b86c94b9f9161f58340ed15059e4ab61cd0af3b`
 
 ## Default controls
 
@@ -109,7 +109,7 @@ These parameters control the output resolution of the core (default bolded):
 | Video Standard       | **PAL 50Hz**, NTSC 60Hz                 |
 | Video Resolution     | **Automatic**, Low, High, Super-High    |
 | Video Line Mode      | **Automatic**, Single Line, Double Line |
-| Aspect Ratio         | **Automatic**, PAL, NTSC                |
+| Aspect Ratio         | **Automatic**, PAL, NTSC, 1:1           |
 
 With these settings all the standard resolutions are available:
 
