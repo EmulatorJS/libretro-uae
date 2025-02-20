@@ -56,7 +56,11 @@ void to_lower (TCHAR *s, int len)
 }
 int same_aname (const TCHAR *an1, const TCHAR *an2)
 {
+#ifdef _WIN32
+   return CompareString (LOCALE_INVARIANT, NORM_IGNORECASE, an1, -1, an2, -1) == CSTR_EQUAL;
+#else
    return string_is_equal(an1, an2);
+#endif
 }
 
 void png_set_expand (void) {}
