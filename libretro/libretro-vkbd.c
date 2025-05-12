@@ -16,10 +16,13 @@ int vkflag[10] = {0};
 #if POINTER_DEBUG
 static int pointer_x = 0;
 static int pointer_y = 0;
+static int pointer_p = 0;
 #endif
 static int last_pointer_x = 0;
 static int last_pointer_y = 0;
-
+static int last_pointer_p = 0;
+static bool pointer_active = false;
+static bool vkey_active = true;
 static int vkey_pos_x = 0;
 static int vkey_pos_y = 0;
 static int vkbd_x_min = 0;
@@ -73,7 +76,7 @@ static const retro_vkeys vkeys[VKBDX * VKBDY * 2] =
    { "TRBF","TRBF",VKBD_TURBOFIRE },
    { "ASPR","CROP",VKBD_ASPECT_CROP },
    { "STBR","SVDS",VKBD_STATUSBAR_SAVEDISK },
-   { {17}  ,{17}  ,VKBD_RESET },
+   { {17}  ,"WHDQ",VKBD_RESET },
 
    /* 0 PG1 */
    { "Esc" ,"Esc" ,RETROK_ESCAPE },
@@ -179,7 +182,7 @@ static const retro_vkeys vkeys[VKBDX * VKBDY * 2] =
    { "TRBF","TRBF",VKBD_TURBOFIRE },
    { "ASPR","CROP",VKBD_ASPECT_CROP },
    { "STBR","SVDS",VKBD_STATUSBAR_SAVEDISK },
-   { {17}  ,{17}  ,VKBD_RESET },
+   { {17}  ,"WHDQ",VKBD_RESET },
 
    /* 0 PG2 */
    { "Esc" ,"Esc" ,RETROK_ESCAPE },
@@ -401,22 +404,26 @@ void print_vkbd(void)
 
    memset(graphed, 0, sizeof(graphed));
 
-   if (video_config_geometry & PUAE_VIDEO_HIRES || video_config_geometry & PUAE_VIDEO_SUPERHIRES)
+   if (video_config & PUAE_VIDEO_HIRES || video_config & PUAE_VIDEO_SUPERHIRES)
    {
-      FONT_WIDTH         = 2;
-      XKEYSPACING        = 2;
-      XOFFSET            = -1;
-
-      /* PUAE_VIDEO_HIRES_DOUBLELINE */
-      if (video_config_geometry & PUAE_VIDEO_DOUBLELINE)
+      if (retrow > PUAE_VIDEO_WIDTH_S72)
       {
-         FONT_HEIGHT    *= 2;
-         YKEYSPACING    *= 2;
-         YPADDING       *= 2;
+         FONT_WIDTH      = 2;
+         XKEYSPACING     = 2;
+         XOFFSET         = -1;
       }
 
-      /* PUAE_VIDEO_SUPERHIRES */
-      if (video_config_geometry & PUAE_VIDEO_SUPERHIRES)
+      if (video_config & PUAE_VIDEO_DOUBLELINE || retro_doublescan)
+      {
+         char multip = 2;
+         if (retroh > PUAE_VIDEO_HEIGHT_PAL && (retrow != PUAE_VIDEO_WIDTH_S72 && retrow != PUAE_VIDEO_WIDTH_S72 * 2))
+            multip = 4;
+
+         FONT_HEIGHT    *= multip;
+         YKEYSPACING    *= multip;
+      }
+
+      if (video_config & PUAE_VIDEO_SUPERHIRES && (retrow != PUAE_VIDEO_WIDTH_S72 && retrow != PUAE_VIDEO_WIDTH_S72 * 2))
       {
          FONT_WIDTH     *= 2;
          XKEYSPACING    *= 2;
@@ -427,7 +434,7 @@ void print_vkbd(void)
    XOFFSET      += retrox_crop;
 
    int XSIDE     = (320 * FONT_WIDTH) / VKBDX;
-   int YSIDE     = (172 * FONT_HEIGHT) / VKBDY;
+   int YSIDE     = (170 * FONT_HEIGHT) / VKBDY;
 
    XPADDING      = retrow_crop - (XSIDE * VKBDX);
    YPADDING      = retroh_crop + (retroy_crop * 2) - (YSIDE * VKBDY);
@@ -455,6 +462,11 @@ void print_vkbd(void)
 
    vkbd_x_max += vkbd_x_gap_pad;
    vkbd_y_max += vkbd_y_gap_pad;
+
+   vkbd_x_min = (vkbd_x_min < XKEYSPACING) ? XKEYSPACING : vkbd_x_min;
+   vkbd_y_min = (vkbd_y_min < YKEYSPACING) ? YKEYSPACING : vkbd_y_min;
+   vkbd_x_max = (vkbd_x_max > retrow) ? retrow : vkbd_x_max;
+   vkbd_y_max = (vkbd_y_max > retroh) ? retroh : vkbd_y_max;
 
    /* Opacity */
    BKG_ALPHA = (retro_vkbd_transparent) ? ALPHA : GRAPH_ALPHA_100;
@@ -547,6 +559,9 @@ void print_vkbd(void)
          YKEY  = y_gap + YOFFSET + YBASEKEY + (y * YSIDE);
          YTEXT = y_gap + YOFFSET + YBASETEXT + BKG_PADDING_Y + (y * YSIDE);
 
+         XKEY  = (XKEY < 0) ? 0 : XKEY;
+         YKEY  = (YKEY < 0) ? 0 : YKEY;
+
          /* Empty key */
          if (vkeys[(y * VKBDX) + x].value == -1)
          {
@@ -556,7 +571,7 @@ void print_vkbd(void)
                       0, BRD_ALPHA);
          }
          /* Not selected key */
-         else if (((vkey_pos_y * VKBDX) + vkey_pos_x + page) != ((y * VKBDX) + x + page))
+         else if (!vkey_active || ((vkey_pos_y * VKBDX) + vkey_pos_x + page) != ((y * VKBDX) + x + page))
          {
             int FONT_ALPHA = BKG_ALPHA;
             FONT_ALPHA = (FONT_ALPHA < GRAPH_ALPHA_25) ? GRAPH_ALPHA_25 : FONT_ALPHA;
@@ -586,26 +601,33 @@ void print_vkbd(void)
          ? ((BKG_ALPHA == GRAPH_ALPHA_100) ? GRAPH_ALPHA_100 : GRAPH_ALPHA_75)
          : GRAPH_ALPHA_100;
 
-   /* Selected key */
-   int current_key_pos = (vkey_pos_y * VKBDX) + vkey_pos_x + page;
-   int current_key_val = vkeys[current_key_pos].value;
 
-   /* Pressed key color */
-   if (vkflag[RETRO_DEVICE_ID_JOYPAD_B] && (current_key_val == vkey_sticky1 ||
-                                            current_key_val == vkey_sticky2))
-      ; /* no-op */
-   else if (vkflag[RETRO_DEVICE_ID_JOYPAD_B] || retro_key_state_internal[(current_key_val > 0) ? current_key_val : 0])
-      BKG_COLOR_SEL = BKG_COLOR_ACTIVE;
-   else
-      FONT_COLOR = FONT_COLOR_SEL;
+   int current_key_pos = 0;
+   int current_key_val = 0;
 
-   /* Selected key string */
-   snprintf(string, sizeof(string), "%s",
-         (!shifted) ? vkeys[current_key_pos].normal
-                    : vkeys[current_key_pos].shift);
+   if (vkey_active)
+   {
+      /* Selected key */
+      current_key_pos = (vkey_pos_y * VKBDX) + vkey_pos_x + page;
+      current_key_val = vkeys[current_key_pos].value;
+
+      /* Pressed key color */
+      if (vkflag[RETRO_DEVICE_ID_JOYPAD_B] && (current_key_val == vkey_sticky1 ||
+                                               current_key_val == vkey_sticky2))
+         ; /* no-op */
+      else if (vkflag[RETRO_DEVICE_ID_JOYPAD_B] || retro_key_state_internal[(current_key_val > 0) ? current_key_val : 0])
+         BKG_COLOR_SEL = BKG_COLOR_ACTIVE;
+      else
+         FONT_COLOR = FONT_COLOR_SEL;
+
+      /* Selected key string */
+      snprintf(string, sizeof(string), "%s",
+            (!shifted) ? vkeys[current_key_pos].normal
+                       : vkeys[current_key_pos].shift);
+   }
 
    /* Reset key */
-   if (current_key_val == VKBD_RESET)
+   if (current_key_val == VKBD_RESET && !shifted)
    {
       signed char reset_counter = 0;
       if (last_vkey_pressed_time < now && last_vkey_pressed != -1)
@@ -640,28 +662,31 @@ void print_vkbd(void)
       }
    }
 
-   x_gap = 0;
-   if (VKBDX_GAP_POS && VKBDX_GAP_PAD && vkey_pos_x >= VKBDX_GAP_POS)
-      x_gap = vkbd_x_gap_pad;
-   y_gap = 0;
-   if (VKBDY_GAP_POS && VKBDY_GAP_PAD && vkey_pos_y >= VKBDY_GAP_POS)
-      y_gap = vkbd_y_gap_pad;
+   if (vkey_active)
+   {
+      x_gap = 0;
+      if (VKBDX_GAP_POS && VKBDX_GAP_PAD && vkey_pos_x >= VKBDX_GAP_POS)
+         x_gap = vkbd_x_gap_pad;
+      y_gap = 0;
+      if (VKBDY_GAP_POS && VKBDY_GAP_PAD && vkey_pos_y >= VKBDY_GAP_POS)
+         y_gap = vkbd_y_gap_pad;
 
-   /* Selected key position */
-   XKEY  = x_gap + XOFFSET + XBASEKEY + (vkey_pos_x * XSIDE);
-   XTEXT = x_gap + XOFFSET + XBASETEXT + BKG_PADDING_X + (vkey_pos_x * XSIDE);
-   YKEY  = y_gap + YOFFSET + YBASEKEY + (vkey_pos_y * YSIDE);
-   YTEXT = y_gap + YOFFSET + YBASETEXT + BKG_PADDING_Y + (vkey_pos_y * YSIDE);
+      /* Selected key position */
+      XKEY  = x_gap + XOFFSET + XBASEKEY + (vkey_pos_x * XSIDE);
+      XTEXT = x_gap + XOFFSET + XBASETEXT + BKG_PADDING_X + (vkey_pos_x * XSIDE);
+      YKEY  = y_gap + YOFFSET + YBASEKEY + (vkey_pos_y * YSIDE);
+      YTEXT = y_gap + YOFFSET + YBASETEXT + BKG_PADDING_Y + (vkey_pos_y * YSIDE);
 
-   /* Selected key background */
-   draw_fbox(XKEY+XKEYSPACING, YKEY+YKEYSPACING,
-             XSIDE-XKEYSPACING, YSIDE-YKEYSPACING,
-             BKG_COLOR_SEL, BKG_ALPHA);
+      /* Selected key background */
+      draw_fbox(XKEY+XKEYSPACING, YKEY+YKEYSPACING,
+                XSIDE-XKEYSPACING, YSIDE-YKEYSPACING,
+                BKG_COLOR_SEL, BKG_ALPHA);
 
-   /* Selected key text */
-   draw_text(XTEXT, YTEXT, FONT_COLOR, 0, GRAPH_ALPHA_100,
-             GRAPH_BG_NONE, FONT_WIDTH, FONT_HEIGHT, FONT_MAX,
-             string);
+      /* Selected key text */
+      draw_text(XTEXT, YTEXT, FONT_COLOR, 0, GRAPH_ALPHA_100,
+                GRAPH_BG_NONE, FONT_WIDTH, FONT_HEIGHT, FONT_MAX,
+                string);
+   }
 
    if (BRD_ALPHA == GRAPH_ALPHA_0)
       return;
@@ -674,7 +699,7 @@ void print_vkbd(void)
 
    if (VKBDY_GAP_POS)
    {
-      unsigned lores_offset = (retrow_crop < 361 && retrow_crop % 2 == 0);
+      unsigned lores_offset = (retrow_crop < 401 && retrow_crop % 2 == 0);
 
       draw_fbox(vkbd_x_min-FONT_WIDTH, YOFFSET+YBASEKEY+(VKBDY_GAP_POS * YSIDE)+FONT_HEIGHT,
                 vkbd_x_max-vkbd_x_min+(FONT_WIDTH * 2)+XKEYSPACING+((lores_offset) ? -XKEYSPACING : 0), vkbd_y_gap_pad-FONT_HEIGHT,
@@ -690,7 +715,7 @@ void print_vkbd(void)
    {
       unsigned corner_y_min = 0;
       unsigned corner_y_max = 0;
-      unsigned lores_offset = (retrow_crop < 361 && retrow_crop % 2 == 0);
+      unsigned lores_offset = (retrow_crop < 401 && retrow_crop % 2 == 0);
 
       /* Top */
       corner_y_min = 0;
@@ -718,7 +743,7 @@ void print_vkbd(void)
    }
 
 #if POINTER_DEBUG
-   draw_hline(pointer_x, pointer_y, 1, 1, RGBc(255, 0, 255));
+   draw_hline(pointer_x, pointer_y, 1, 1, pointer_p ? RGBc(0, 255, 0) : RGBc(255, 0, 255));
 #endif
 }
 
@@ -840,8 +865,17 @@ static void convert_vkbd_to_mapper(int *vkbd_mapping_key, char **var_value)
          *vkbd_mapping_key = 0;
          break;
       case VKBD_RESET:
-         *var_value = get_variable("puae_mapper_reset");
-         *vkbd_mapping_key = 0;
+         if (shifted)
+         {
+            /* WHDLoad QuitKey in AK_NUMBERSIGN */
+            *var_value = strdup("RETROK_HASH");
+            *vkbd_mapping_key = RETROK_HASH;
+         }
+         else
+         {
+            *var_value = get_variable("puae_mapper_reset");
+            *vkbd_mapping_key = 0;
+         }
          break;
       case VKBD_CAPSLOCK:
          *var_value = strdup("RETROK_CAPSLOCK");
@@ -1079,14 +1113,20 @@ void input_vkbd(void)
    /* Absolute pointer */
    int p_x = input_state_cb(0, RETRO_DEVICE_POINTER, 0, RETRO_DEVICE_ID_POINTER_X);
    int p_y = input_state_cb(0, RETRO_DEVICE_POINTER, 0, RETRO_DEVICE_ID_POINTER_Y);
+   int p_p = input_state_cb(0, RETRO_DEVICE_POINTER, 0, RETRO_DEVICE_ID_POINTER_PRESSED);
 
-   if (p_x != 0 && p_y != 0 && (p_x != last_pointer_x || p_y != last_pointer_y))
+   /* Enable pointer only after first pointer press. Pointer is also disabled with joypad navigation. */
+   if (!last_pointer_p && p_p)
+      pointer_active = true;
+
+   if (!pointer_active)
+      p_x = p_y = 0;
+
+   if (p_x != 0 && p_y != 0 && (p_x != last_pointer_x || p_y != last_pointer_y || p_p != last_pointer_p))
    {
       int px = (int)((p_x + 0x7fff) * retrow_crop / 0xffff + retrox_crop);
       int py = (int)((p_y + 0x7fff) * retroh_crop / 0xffff + retroy_crop);
-
-      last_pointer_x = p_x;
-      last_pointer_y = p_y;
+      bool inside = false;
 
       if (px >= vkbd_x_min && px <= vkbd_x_max && py >= vkbd_y_min && py <= vkbd_y_max)
       {
@@ -1106,11 +1146,23 @@ void input_vkbd(void)
          vkey_pos_x = (vkey_pos_x > VKBDX - 1) ? VKBDX - 1 : vkey_pos_x;
          vkey_pos_y = (vkey_pos_y < 0) ? 0 : vkey_pos_y;
          vkey_pos_y = (vkey_pos_y > VKBDY - 1) ? VKBDY - 1 : vkey_pos_y;
+         inside = true;
       }
+
+      if ((last_pointer_p && !p_p) || !inside)
+         vkey_active = false;
+      else if ((!last_pointer_p && p_p))
+         vkey_active = true;
+
+      last_pointer_x = p_x;
+      last_pointer_y = p_y;
+      last_pointer_p = p_p;
+
 #if POINTER_DEBUG
       pointer_x = px;
       pointer_y = py;
-      printf("px:%d py:%d (%d,%d) vkey:%dx%d\n", p_x, p_y, px, py, vkey_pos_x, vkey_pos_y);
+      pointer_p = p_p;
+      printf("px:%d py:%d (%d,%d) pr:%d vkey:%dx%d\n", p_x, p_y, px, py, p_p, vkey_pos_x, vkey_pos_y);
 #endif
    }
 
@@ -1143,7 +1195,8 @@ void input_vkbd(void)
                                              (joypad_bits[1] & (1 << i))))
    {
       vkflag[i] = 1;
-      vkey_pressed = vkeys[(vkey_pos_y * VKBDX) + vkey_pos_x + ((retro_vkbd_page) ? VKBDX * VKBDY : 0)].value;
+      if (vkey_active)
+         vkey_pressed = vkeys[(vkey_pos_y * VKBDX) + vkey_pos_x + ((retro_vkbd_page) ? VKBDX * VKBDY : 0)].value;
       vkbd_mapping_key = vkey_pressed;
 
       last_vkey_pressed = vkey_pressed;
@@ -1211,7 +1264,8 @@ void input_vkbd(void)
                       input_state_cb(0, RETRO_DEVICE_POINTER, 0, RETRO_DEVICE_ID_POINTER_PRESSED)))
    {
       vkflag[i] = 1;
-      vkey_pressed = vkeys[(vkey_pos_y * VKBDX) + vkey_pos_x + ((retro_vkbd_page) ? VKBDX * VKBDY : 0)].value;
+      if (vkey_active)
+         vkey_pressed = vkeys[(vkey_pos_y * VKBDX) + vkey_pos_x + ((retro_vkbd_page) ? VKBDX * VKBDY : 0)].value;
 
       if (vkey_pressed != -1 && last_vkey_pressed == -1)
       {
@@ -1224,7 +1278,10 @@ void input_vkbd(void)
             case VKBD_NUMPAD:
                retro_vkbd_page = !retro_vkbd_page;
                break;
-            case VKBD_RESET: /* Reset on release */
+            case VKBD_RESET:
+               /* Reset on release, press WHDLoad QuitKey when shifted */
+               if (shifted)
+                  retro_key_down(RETROK_HASH);
                break;
             case VKBD_STATUSBAR_SAVEDISK:
                if (shifted)
@@ -1330,12 +1387,22 @@ void input_vkbd(void)
       }
       else if (last_vkey_pressed == VKBD_RESET)
       {
-         /* Reset on long press */
-         if (now - last_vkey_pressed_time > VKBD_STICKY_HOLDING_TIME)
-            emu_function(EMU_RESET);
-         /* Freeze on short press */
+         bool shifted = retro_capslock
+               || retro_key_state_internal[RETROK_LSHIFT]
+               || retro_key_state_internal[RETROK_RSHIFT];
+
+         /* Release WHDLoad QuitKey when shifted */
+         if (shifted)
+            retro_key_up(RETROK_HASH);
          else
-            emu_function(EMU_FREEZE);
+         {
+            /* Reset on long press */
+            if (now - last_vkey_pressed_time > VKBD_STICKY_HOLDING_TIME)
+               emu_function(EMU_RESET);
+            /* Freeze on short press */
+            else
+               emu_function(EMU_FREEZE);
+         }
       }
    }
    else
@@ -1433,8 +1500,11 @@ void input_vkbd(void)
        vkflag[RETRO_DEVICE_ID_JOYPAD_LEFT] ||
        vkflag[RETRO_DEVICE_ID_JOYPAD_RIGHT])
    {
+      /* Always enable vkey and disable pointer */
+      vkey_active    = true;
+      pointer_active = false;
+
       if (let_go_of_direction)
-         /* just pressing down */
          last_press_time = now;
 
       if ((now - last_press_time > VKBD_MIN_HOLDING_TIME

@@ -31,7 +31,7 @@ float vsync_vblank, vsync_hblank;
 int busywait;
 int vsync_activeheight, vsync_totalheight;
 int max_uae_width = EMULATOR_MAX_WIDTH;
-int max_uae_height = EMULATOR_MAX_HEIGHT;
+int max_uae_height = EMULATOR_MAX_HEIGHT * 2;
 int pause_emulation;
 bool gfx_hdr;
 addrbank *gfxmem_banks[MAX_RTG_BOARDS];
@@ -47,7 +47,6 @@ extern int retro_ui_get_pointer_state(uint8_t port, int *px, int *py, uint8_t *p
 extern unsigned short int defaultw;
 extern unsigned short int defaulth;
 extern unsigned char width_multiplier;
-extern uint8_t libretro_frame_end;
 
 unsigned short int* pixbuf = NULL;
 extern char retro_temp_directory[RETRO_PATH_MAX];
@@ -56,8 +55,11 @@ int retro_thisframe_first_drawn_line;
 int retro_thisframe_last_drawn_line;
 int retro_min_diwstart;
 int retro_max_diwstop;
+int retro_doublescan;
 extern int min_diwstart;
 extern int max_diwstop;
+extern int doublescan;
+extern bool video_productivity;
 
 extern int opt_statusbar;
 extern int opt_statusbar_position;
@@ -304,10 +306,12 @@ static void retro_draw_frame_extras(void)
    struct vidbuffer *vb = &vidinfo->drawbuffer;
 
    int slx, sly;
-   int mult = 1;
+   int mult = (video_config & PUAE_VIDEO_QUADLINE) ? 2 : 1;
    statusline_getpos(vb->monitor_id, &slx, &sly, vb->outwidth, vb->outheight);
    for (int i = 0; i < TD_TOTAL_HEIGHT * mult; i++) {
       int line = sly + i;
+      if (line < 0)
+         continue;
       draw_status_line(vb->monitor_id, line, i);
    }
 }
@@ -317,14 +321,21 @@ void print_statusbar(void)
    if (opt_statusbar & STATUSBAR_BASIC && !statusbar_message_timer)
       goto end;
 
-   int BOX_X                = retrox_crop;
-   int BOX_Y                = 0;
-   int BOX_WIDTH            = 0;
-   int BOX_HEIGHT           = 11;
-   int BOX_PADDING          = 2;
-
    int FONT_WIDTH           = 1;
-   if (video_config & PUAE_VIDEO_HIRES)
+   int FONT_HEIGHT          = 1;
+
+   if (retro_doublescan || (retrow == PUAE_VIDEO_WIDTH_S72 || retrow == PUAE_VIDEO_WIDTH_S72 * 2))
+   {
+      if (retrow == PUAE_VIDEO_WIDTH_S72 * 2)
+         FONT_WIDTH = 2;
+
+      if (video_config & PUAE_VIDEO_DOUBLELINE)
+         FONT_WIDTH = 1;
+
+      if (video_config & PUAE_VIDEO_QUADLINE)
+         FONT_HEIGHT = 2;
+   }
+   else if (video_config & PUAE_VIDEO_HIRES)
    {
       if (video_config & PUAE_VIDEO_DOUBLELINE)
          FONT_WIDTH         = 1;
@@ -338,13 +349,22 @@ void print_statusbar(void)
       else
          FONT_WIDTH         = 4;
    }
-   int FONT_HEIGHT          = 1;
-   int FONT_COLOR           = (pix_bytes == 4) ? 0xffffff : 0xffff;;
+
+   int FONT_COLOR           = (pix_bytes == 4) ? 0xffffff : 0xffff;
    int FONT_SLOT            = 34 * FONT_WIDTH;
 
-   int TEXT_X               = 1 * FONT_WIDTH + retrox_crop;
+   int BOX_X                = retrox_crop;
+   int BOX_Y                = 0;
+   int BOX_WIDTH            = 0;
+   int BOX_HEIGHT           = FONT_HEIGHT * 11;
+   int BOX_PADDING          = FONT_HEIGHT * 2;
+
+   int TEXT_X               = FONT_WIDTH + retrox_crop;
    int TEXT_Y               = 0;
-   int TEXT_LENGTH          = (video_config & PUAE_VIDEO_DOUBLELINE) ? 128 : 64;
+   int TEXT_LENGTH_NARROW   = 64;
+   int TEXT_LENGTH_WIDE     = 128;
+   int TEXT_LENGTH          = (((video_config & PUAE_VIDEO_DOUBLELINE) || retro_doublescan) && retrow > PUAE_VIDEO_WIDTH_S72)
+         ? TEXT_LENGTH_WIDE : TEXT_LENGTH_NARROW;
 
    /* Statusbar location */
    /* Top */
@@ -353,11 +373,29 @@ void print_statusbar(void)
    /* Bottom */
    else
       TEXT_Y = gfxvidinfo->drawbuffer.outheight - opt_statusbar_position - BOX_HEIGHT + BOX_PADDING;
+
    BOX_Y = TEXT_Y - BOX_PADDING;
+
+   /* No negatives */
+   BOX_X  = (BOX_X  < 0) ? 0 : BOX_X;
+   BOX_Y  = (BOX_Y  < 0) ? 0 : BOX_Y;
+   TEXT_X = (TEXT_X < 0) ? 0 : TEXT_X;
+   TEXT_Y = (TEXT_Y < 0) ? 0 : TEXT_Y;
 
    /* Statusbar size */
    BOX_WIDTH = retrow_crop;
    int CROP_WIDTH_OFFSET = retrow - retrow_crop;
+
+   if (retrow == PUAE_VIDEO_WIDTH_S72 * 2)
+      CROP_WIDTH_OFFSET = PUAE_VIDEO_WIDTH - retrow;
+   else if (retrow == PUAE_VIDEO_WIDTH_S72)
+      CROP_WIDTH_OFFSET = (PUAE_VIDEO_WIDTH / 2) - retrow;
+   else if (retro_doublescan || video_productivity)
+   {
+      CROP_WIDTH_OFFSET = PUAE_VIDEO_WIDTH - PUAE_VIDEO_WIDTH_PROD;
+      if (video_config & PUAE_VIDEO_SUPERHIRES)
+         CROP_WIDTH_OFFSET *= 2;
+   }
 
    /* Video resolution */
    int TEXT_X_RESOLUTION = TEXT_X + (FONT_SLOT*4) + (FONT_WIDTH*16) - (CROP_WIDTH_OFFSET/2);
@@ -365,14 +403,8 @@ void print_statusbar(void)
    snprintf(RESOLUTION, sizeof(RESOLUTION), "%4dx%3d", retrow_crop, retroh_crop);
 
    /* Model & memory */
-   int TEXT_X_MODEL  = TEXT_X + (FONT_SLOT*6) + (FONT_WIDTH*35) - CROP_WIDTH_OFFSET;
-   int TEXT_X_MEMORY = TEXT_X + (FONT_SLOT*6) + (FONT_WIDTH*3) - CROP_WIDTH_OFFSET;
-   /* Sacrifice memory slot if there is not enough width */
-   if (!(video_config & PUAE_VIDEO_DOUBLELINE))
-   {
-      if (TEXT_X_MEMORY < (TEXT_X_RESOLUTION + FONT_SLOT + (FONT_WIDTH*14)))
-         TEXT_X_MEMORY = -1;
-   }
+   int TEXT_X_MODEL  = TEXT_X + (FONT_SLOT*6) + (FONT_WIDTH*42) - CROP_WIDTH_OFFSET;
+   int TEXT_X_MEMORY = TEXT_X + (FONT_SLOT*6) + (FONT_WIDTH*16) - CROP_WIDTH_OFFSET;
 
    unsigned char MODEL[10] = {0};
    unsigned char MEMORY[5] = {0};
@@ -387,13 +419,13 @@ void print_statusbar(void)
    switch (currprefs.cs_compatible)
    {
       case CP_A500:
-         snprintf(MODEL, sizeof(MODEL), "%s", "A500");
+         snprintf(MODEL, sizeof(MODEL), "%s", " A500");
          break;
       case CP_A500P:
          snprintf(MODEL, sizeof(MODEL), "%s", "A500+");
          break;
       case CP_A600:
-         snprintf(MODEL, sizeof(MODEL), "%s", "A600");
+         snprintf(MODEL, sizeof(MODEL), "%s", " A600");
          break;
       case CP_A1200:
          snprintf(MODEL, sizeof(MODEL), "%s", "A1200");
@@ -405,15 +437,15 @@ void print_statusbar(void)
          snprintf(MODEL, sizeof(MODEL), "%s", "A4000");
          break;
       case CP_CDTV:
-         snprintf(MODEL, sizeof(MODEL), "%s", "CDTV");
+         snprintf(MODEL, sizeof(MODEL), "%s", " CDTV");
          break;
       case CP_CD32:
-         snprintf(MODEL, sizeof(MODEL), "%s", "CD32");
+         snprintf(MODEL, sizeof(MODEL), "%s", " CD32");
          break;
    }
 
    /* Double line positions */
-   if (video_config & PUAE_VIDEO_DOUBLELINE)
+   if (TEXT_LENGTH == TEXT_LENGTH_WIDE)
    {
       TEXT_X_RESOLUTION = TEXT_X + (FONT_SLOT*9)  + (FONT_WIDTH*25) - (CROP_WIDTH_OFFSET/2);
       TEXT_X_MODEL      = TEXT_X + (FONT_SLOT*17) + (FONT_WIDTH*20) - CROP_WIDTH_OFFSET;
@@ -616,6 +648,14 @@ void target_fixup_options (struct uae_prefs *p)
 {
    p->gfx_iscanlines = 1;
    p->gfx_pscanlines = 0;
+
+   /* Allow only full Cycle-exact with 68000 */
+   if (p->cpu_memory_cycle_exact && !p->cpu_cycle_exact && p->cpu_model < 68020)
+      p->cpu_cycle_exact = true;
+
+   /* Slow down 68020 memory Cycle-exact default clock */
+   if (!p->cpu_cycle_exact && p->cpu_memory_cycle_exact && !p->cpu_clock_multiplier && p->cpu_model == 68020)
+      p->cpu_clock_multiplier = 2 * 256;
 }
 
 /*** Input ***/
@@ -791,6 +831,7 @@ void unlockscr(struct vidbuffer *vb, int y_start, int y_end)
    retro_thisframe_last_drawn_line  = thisframe_last_drawn_line;
    retro_min_diwstart               = min_diwstart;
    retro_max_diwstop                = max_diwstop;
+   retro_doublescan                 = doublescan > 0;
 
    /* Align the resulting Automatic Crop screen height to even number */
    if (!retro_av_info_is_lace && (retro_thisframe_last_drawn_line - retro_thisframe_first_drawn_line + 1) % 2)
@@ -805,8 +846,8 @@ void unlockscr(struct vidbuffer *vb, int y_start, int y_end)
       retro_thisframe_last_drawn_line = -1;
 
    /* Flag that we should end the frame, return out of retro_run */
-   libretro_frame_end = 1;
-   set_special(SPCFLAG_CHECK);
+   libretro_frame_end = true;
+   set_special(1);
 
    if (lightpen_enabled)
       retro_lightpen_update();
@@ -820,7 +861,6 @@ void unlockscr(struct vidbuffer *vb, int y_start, int y_end)
    {
       retro_thisframe_first_drawn_line = thisframe_first_drawn_line = minfirstline;
       retro_thisframe_last_drawn_line  = thisframe_last_drawn_line  = minfirstline + (retroh / 2);
-      retro_max_diwstop                = max_diwstop = (min_diwstart + (352 * width_multiplier));
       gui_flicker_led(LED_CD, 0, 1);
    }
 #endif
@@ -946,7 +986,11 @@ int check_prefs_changed_gfx (void)
 
       gfxvidinfo->drawbuffer.width_allocated  = defaultw;
       gfxvidinfo->drawbuffer.height_allocated = defaulth;
+      gfxvidinfo->drawbuffer.outwidth         = defaultw;
+      gfxvidinfo->drawbuffer.outheight        = defaulth;
       gfxvidinfo->drawbuffer.rowbytes         = gfxvidinfo->drawbuffer.width_allocated * gfxvidinfo->drawbuffer.pixbytes;
+
+      init_hz_normal();
 
 #if 0
    printf("%s: %dx%d, res=%d vres=%d\n", __func__,
@@ -1080,7 +1124,7 @@ int vsync_isdone(frame_time_t *dt)
 #endif
 }
 
-bool target_graphics_buffer_update(int monid)
+bool target_graphics_buffer_update(int monid, bool force)
 {
     return true;
 }
@@ -1230,7 +1274,7 @@ struct inputdevice_functions inputdevicefunc_joystick = {
    get_joystick_flags
 };
 
-int input_get_default_joystick (struct uae_input_device *uid, int num, int port, int af, int mode, bool gp, bool joymouseswap)
+int input_get_default_joystick (struct uae_input_device *uid, int num, int port, int af, int mode, bool gp, bool joymouseswap, bool default_osk)
 {
    if (is_cd32pad(0))
    {
@@ -1330,7 +1374,7 @@ int input_get_default_joystick (struct uae_input_device *uid, int num, int port,
    return 1;
 }
 
-int input_get_default_joystick_analog (struct uae_input_device *uid, int num, int port, int af, bool gp, bool joymouseswap)
+int input_get_default_joystick_analog (struct uae_input_device *uid, int num, int port, int af, bool gp, bool joymouseswap, bool default_osk)
 {
    uid[num].eventid[ID_AXIS_OFFSET + 0][0] = port ? INPUTEVENT_JOY2_HORIZ_POT : INPUTEVENT_JOY1_HORIZ_POT;
    uid[num].eventid[ID_AXIS_OFFSET + 1][0] = port ? INPUTEVENT_JOY2_VERT_POT : INPUTEVENT_JOY1_VERT_POT;
@@ -1345,7 +1389,7 @@ int input_get_default_joystick_analog (struct uae_input_device *uid, int num, in
    return 0;
 }
 
-void target_inputdevice_unacquire(void) {}
+void target_inputdevice_unacquire(bool full) {}
 void target_inputdevice_acquire(void) {}
 
 /***************************************************************
@@ -1612,6 +1656,8 @@ void keyboard_settrans (void)
 #endif
 }
 
+bool target_osd_keyboard(int show) { return false; }
+void target_osk_control(int x, int y, int button, int buttonstate) { }
 
 /********************************************************************
     Misc fuctions
@@ -2663,7 +2709,7 @@ cdrom_file *cdrom_open(chd_file *chd)
 		return NULL;
 
 	/* allocate memory for the CD-ROM file */
-	file = xmalloc(cdrom_file, 1);
+	file = xmalloc(cdrom_file, sizeof(cdrom_file));
 	if (file == NULL)
 		return NULL;
 
@@ -3518,6 +3564,5 @@ chd_error chd_hunk_info(chd_file *cf, UINT32 hunknum, chd_codec_type *compressor
 	}
 	return CHDERR_NONE;
 }
-
 
 #endif /* WITH_CHD */

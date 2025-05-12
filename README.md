@@ -1,6 +1,6 @@
 # PUAE LIBRETRO
 
-Based on WinUAE 5.0.0, git commit `975a167c7636d563db1c8b3292f690b6f30e71d2`
+Based on WinUAE 5.3.0, git commit `5b86c94b9f9161f58340ed15059e4ab61cd0af3b`
 
 ## Default controls
 
@@ -109,7 +109,7 @@ These parameters control the output resolution of the core (default bolded):
 | Video Standard       | **PAL 50Hz**, NTSC 60Hz                 |
 | Video Resolution     | **Automatic**, Low, High, Super-High    |
 | Video Line Mode      | **Automatic**, Single Line, Double Line |
-| Aspect Ratio         | **Automatic**, PAL, NTSC                |
+| Aspect Ratio         | **Automatic**, PAL, NTSC, 1:1           |
 
 With these settings all the standard resolutions are available:
 
@@ -202,6 +202,12 @@ Compatible CAPSIMG libraries for Windows, macOS and Linux can be found at [http:
 Compatible CAPSIMG libraries for Android can be found at [https://github.com/rsn8887/capsimg/releases/latest](https://github.com/rsn8887/capsimg/releases/latest)
 
 Please be aware that there are 32-bits and 64-bits versions of the library. Choose the one corresponding to your RetroArch executable.
+
+#### Android
+
+Android does not allow loading dynamic libraries from `system` directory, but it can load from the executable directory, which requires root access.
+
+Android does allow loading from the core directory, which means you can and have to import/install `capsimg.so` as a core to use CAPSIMG without root access.
 
 ### ZIP support
 
@@ -324,6 +330,10 @@ Pre-installed WHDLoad LHA archives can be launched directly without any kind of 
 - Kickstarts will be copied automatically to the helper image
 - To update `WHDLoad:` simply delete the directory or the HDF
 
+- WHDLoad quit key is hardcoded to unused `$2B` = `AK_NUMBERSIGN` = `RETROK_HASH` which does not exist in modern keyboards.
+    - Keyboard shortcut: LCtrl + Backslash
+    - Virtual keyboard shortcut: Shifted RESET button
+
 #### Overrides at startup
 
 - **(Red)** Hold fire button for launch selector
@@ -370,6 +380,7 @@ Pre-installed WHDLoad LHA archives can be launched directly without any kind of 
 
 #### Latest changes
 
+- Updated WHDLoad to 19.1 (2024-12-07).
 - Updated WHDLoad to 18.9 (2023-05-04).
 - Downgraded WHDLoad to 18.6 due to a save related bug in 18.7.
 - Updated WHDLoad to the latest one (18.7 2021-10-23).

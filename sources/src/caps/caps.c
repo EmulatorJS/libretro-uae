@@ -73,7 +73,15 @@ static int load_capslib (void)
     /* This could be done more elegantly ;-) */
 
 #ifdef __LIBRETRO__
+#ifdef __ANDROID__
+    snprintf(CAPSLIB_PATH, RETRO_PATH_MAX, "%s%c%s", "/data/user/0/com.retroarch/cores", DIR_SEP_CHR, CAPSLIB_NAME);
+    if (!path_is_valid(CAPSLIB_PATH))
+        snprintf(CAPSLIB_PATH, RETRO_PATH_MAX, "%s%c%s", "/data/user/0/com.retroarch.aarch64/cores", DIR_SEP_CHR, CAPSLIB_NAME);
+    if (!path_is_valid(CAPSLIB_PATH))
+        snprintf(CAPSLIB_PATH, RETRO_PATH_MAX, "%s%c%s", "/data/user/0/com.retroarch.ra32/cores", DIR_SEP_CHR, CAPSLIB_NAME);
+#else
     snprintf(CAPSLIB_PATH, RETRO_PATH_MAX, "%s%c%s", retro_system_directory, DIR_SEP_CHR, CAPSLIB_NAME);
+#endif
     if (!path_is_valid(CAPSLIB_PATH))
         snprintf(CAPSLIB_PATH, RETRO_PATH_MAX, "%s", CAPSLIB_NAME);
     if (!path_is_valid(CAPSLIB_PATH))

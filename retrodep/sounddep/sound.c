@@ -24,6 +24,7 @@ uae_u16 *paula_sndbufpt;
 int paula_sndbufsize;
 int sound_initialized = 0;
 int soundcheck = 0;
+int active_sound_stereo;
 unsigned int have_sound = 0;
 unsigned int obtainedfreq;
 float scaled_sample_evtime_orig;
@@ -104,7 +105,7 @@ int init_sound (void)
     sndbufsize = DEFAULT_SOUND_MINB;
     obtainedfreq = DEFAULT_SOUND_FREQ;
     sndbufpt = sndbuffer;
-    sample_handler =  sample16s_handler;
+    sample_handler = sample16s_handler;
     sound_initialized = 1;
 
 #ifdef DRIVESOUND
