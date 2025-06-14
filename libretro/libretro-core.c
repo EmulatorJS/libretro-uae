@@ -6676,12 +6676,7 @@ static bool retro_create_config(void)
 #ifdef WIN32
                      tmp_str = string_replace_substring(whdload_path, strlen(whdload_path), "\\", strlen("\\"), "\\\\", strlen("\\\\"));
 #else
-                     size_t str_len = strlen(whdload_path);
-                     tmp_str = calloc((str_len + 2), sizeof(char));
-                     strlcpy(tmp_str, whdload_path, str_len + 1);
-                     /* Force ending slash with empty path_join to make sure the path is not treated as a file */
-                     if (tmp_str[str_len - 1] != '/')
-                        path_join(tmp_str, whdload_path, "");
+                     tmp_str = strdup(whdload_path);
 #endif
                      retro_config_append("filesystem2=rw,WHDLoad:WHDLoad:\"%s\",0\n", tmp_str);
                      free(tmp_str);
@@ -6749,12 +6744,7 @@ static bool retro_create_config(void)
 #ifdef WIN32
                      tmp_str = string_replace_substring(whdsaves_path, strlen(whdsaves_path), "\\", strlen("\\"), "\\\\", strlen("\\\\"));
 #else
-                     size_t str_len = strlen(whdsaves_path);
-                     tmp_str = calloc((str_len + 2), sizeof(char));
-                     strlcpy(tmp_str, whdsaves_path, str_len + 1);
-                     /* Force ending slash with empty path_join to make sure the path is not treated as a file */
-                     if (tmp_str[str_len - 1] != '/')
-                        path_join(tmp_str, whdsaves_path, "");
+                     tmp_str = strdup(whdsaves_path);
 #endif
                      retro_config_append("filesystem2=rw,WHDSaves:WHDSaves:\"%s\",0\n", tmp_str);
                      free(tmp_str);
@@ -6837,12 +6827,7 @@ static bool retro_create_config(void)
 #ifdef WIN32
                   tmp_str = string_replace_substring(retro_system_directory, strlen(retro_system_directory), "\\", strlen("\\"), "\\\\", strlen("\\\\"));
 #else
-                  size_t str_len = strlen(retro_system_directory);
-                  tmp_str = calloc((str_len + 2), sizeof(char));
-                  strlcpy(tmp_str, retro_system_directory, str_len + 1);
-                  /* Force ending slash with empty path_join to make sure the path is not treated as a file */
-                  if (tmp_str[str_len - 1] != '/')
-                     path_join(tmp_str, retro_system_directory, "");
+                  tmp_str = strdup(retro_system_directory);
 #endif
                   retro_config_append("filesystem2=ro,RASystem:RASystem:\"%s\",-128\n", tmp_str);
                   free(tmp_str);
