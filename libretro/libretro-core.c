@@ -4925,10 +4925,10 @@ bool retro_disk_set_image_index(unsigned index)
          switch (dc->types[dc->index])
          {
             case DC_IMAGE_TYPE_FLOPPY:
-               log_cb(RETRO_LOG_INFO, "Disk (%d) inserted in drive DF0: '%s'\n", dc->index + 1, dc->files[dc->index]);
+               log_cb(RETRO_LOG_INFO, "Disk (%d) inserted in drive DF0: \"%s\".\n", dc->index + 1, dc->files[dc->index]);
                break;
             case DC_IMAGE_TYPE_CD:
-               log_cb(RETRO_LOG_INFO, "CD (%d) inserted in drive CD0: '%s'\n", dc->index + 1, dc->files[dc->index]);
+               log_cb(RETRO_LOG_INFO, "CD (%d) inserted in drive CD0: \"%s\".\n", dc->index + 1, dc->files[dc->index]);
                break;
             default:
                return true;
@@ -5344,7 +5344,7 @@ static void retro_config_force_region(void)
    /* If region was specified in the path */
    if (strstr(full_path, "NTSC") || strstr(full_path, "(USA)"))
    {
-      log_cb(RETRO_LOG_INFO, "Forcing NTSC mode\n");
+      log_cb(RETRO_LOG_INFO, "Forcing NTSC mode.\n");
       retro_config_append("ntsc=true\n");
       real_ntsc = true;
       forced_video = RETRO_REGION_NTSC;
@@ -5355,7 +5355,7 @@ static void retro_config_force_region(void)
          || strstr(full_path, "(Finland)") || strstr(full_path, "(Denmark)")
          || strstr(full_path, "(Sweden)"))
    {
-      log_cb(RETRO_LOG_INFO, "Forcing PAL mode\n");
+      log_cb(RETRO_LOG_INFO, "Forcing PAL mode.\n");
       retro_config_append("ntsc=false\n");
       real_ntsc = false;
       forced_video = RETRO_REGION_PAL;
@@ -5418,9 +5418,9 @@ static void retro_config_boot_hd(void)
       path_join(boothd_hdf, retro_save_directory, LIBRETRO_PUAE_PREFIX ".hdf");
       if (!path_is_valid(boothd_hdf))
       {
-         log_cb(RETRO_LOG_INFO, "Boot HD image file '%s' not found, attempting to create..\n", boothd_hdf);
+         log_cb(RETRO_LOG_INFO, "Boot HD image file \"%s\" not found, attempting to create...\n", boothd_hdf);
          if (make_hdf(boothd_hdf, boothd_size, label))
-            log_cb(RETRO_LOG_ERROR, "Unable to create Boot HD image: '%s'\n", boothd_hdf);
+            log_cb(RETRO_LOG_ERROR, "Unable to create Boot HD image: \"%s\"\n", boothd_hdf);
       }
       if (path_is_valid(boothd_hdf))
       {
@@ -5450,7 +5450,7 @@ static void retro_config_boot_hd(void)
 
       if (!path_is_directory(boothd_path))
       {
-         log_cb(RETRO_LOG_INFO, "Boot HD image directory '%s' not found, attempting to create..\n", boothd_path);
+         log_cb(RETRO_LOG_INFO, "Boot HD image directory \"%s\" not found, attempting to create...\n", boothd_path);
          path_mkdir(boothd_path);
       }
       if (path_is_directory(boothd_path))
@@ -5459,7 +5459,7 @@ static void retro_config_boot_hd(void)
          retro_config_append("filesystem2=rw,%s:%s:\"%s\",0\n", volume, label, tmp_str);
       }
       else
-         log_cb(RETRO_LOG_ERROR, "Unable to create Boot HD directory: '%s'\n", boothd_path);
+         log_cb(RETRO_LOG_ERROR, "Unable to create Boot HD directory: \"%s\".\n", boothd_path);
    }
 
    if (tmp_str)
@@ -5473,7 +5473,7 @@ static void retro_config_kickstart(void)
    bool valid = false;
 
    /* Wrong place for logging model but still the best place */
-   log_cb(RETRO_LOG_INFO, "Model: '%s'\n", uae_preset);
+   log_cb(RETRO_LOG_INFO, "Model: \"%s\".\n", uae_preset);
 
    /* Forced Kickstart */
    if (strcmp(opt_kickstart, "auto"))
@@ -5535,13 +5535,13 @@ static void retro_config_kickstart(void)
    /* Final append + logging */
    if (valid)
    {
-      log_cb(RETRO_LOG_INFO, "Kickstart: '%s'\n", path_basename(kickstart));
+      log_cb(RETRO_LOG_INFO, "Kickstart: \"%s\".\n", path_basename(kickstart));
       if (strcmp(opt_kickstart, "aros"))
          retro_config_append("kickstart_rom_file=%s\n", kickstart);
    }
    else
    {
-      log_cb(RETRO_LOG_ERROR, "Kickstart ROM '%s' not found!\n", path_basename(kickstart));
+      log_cb(RETRO_LOG_ERROR, "Kickstart ROM \"%s\" not found!\n", path_basename(kickstart));
       snprintf(retro_message_msg, sizeof(retro_message_msg), "Kickstart ROM '%s' not found!", path_basename(kickstart));
       retro_message = true;
    }
@@ -5601,13 +5601,13 @@ static void retro_config_kickstart(void)
          /* Final append + logging */
          if (valid)
          {
-            log_cb(RETRO_LOG_INFO, "+Extended: '%s'\n", path_basename(kickstart_ext));
+            log_cb(RETRO_LOG_INFO, "+Extended: \"%s\"\n", path_basename(kickstart_ext));
             retro_config_append("kickstart_ext_rom_file=%s\n", kickstart_ext);
          }
          else
          {
-            log_cb(RETRO_LOG_ERROR, "Kickstart extended ROM '%s' not found!\n", path_basename(kickstart_ext));
-            snprintf(retro_message_msg, sizeof(retro_message_msg), "Kickstart extended ROM '%s' not found!", path_basename(kickstart_ext));
+            log_cb(RETRO_LOG_ERROR, "Kickstart extended ROM \"%s\" not found!\n", path_basename(kickstart_ext));
+            snprintf(retro_message_msg, sizeof(retro_message_msg), "Kickstart extended ROM \"%s\" not found!", path_basename(kickstart_ext));
             retro_message = true;
          }
       }
@@ -5632,7 +5632,7 @@ static void retro_config_kickstart(void)
          snprintf(flash_filename, sizeof(flash_filename), "%s.nvr", flash_filebase);
       }
       path_join(flash_filepath, retro_save_directory, flash_filename);
-      log_cb(RETRO_LOG_INFO, "NVRAM: '%s'\n", flash_filepath);
+      log_cb(RETRO_LOG_INFO, "NVRAM: \"%s\".\n", flash_filepath);
       retro_config_append("flash_file=%s\n", flash_filepath);
    }
 }
@@ -5703,7 +5703,7 @@ static void retro_config_harddrives(void)
          }
       }
 
-      log_cb(RETRO_LOG_INFO, "HD (%d) inserted in drive DH%d: '%s'\n", unit + 1, unit, dc->files[i]);
+      log_cb(RETRO_LOG_INFO, "HD (%d) inserted in drive DH%d: \"%s\".\n", unit + 1, unit, dc->files[i]);
       unit++;
 
       if (tmp_str)
@@ -5806,11 +5806,11 @@ static void whdload_kscopy(bool legacy)
          /* Allow size exception */
          if (     ks_stat.st_size != ks_size[x]
                && ks_stat.st_size - key_extra != ks_size[x])
-            log_cb(RETRO_LOG_INFO, "WHDLoad not installing Kickstart '%s' due to incorrect size, %d != %d\n", path_basename(ks_src), ks_stat.st_size, ks_size[x]);
+            log_cb(RETRO_LOG_INFO, "WHDLoad not installing Kickstart \"%s\" due to incorrect size, %d != %d.\n", path_basename(ks_src), ks_stat.st_size, ks_size[x]);
          else if (fcopy(ks_src, ks_dst) < 0)
-            log_cb(RETRO_LOG_INFO, "WHDLoad failed to install '%s' to '%s'\n", path_basename(ks_src), ks_dst);
+            log_cb(RETRO_LOG_INFO, "WHDLoad failed to install \"%s\" to \"%s\".\n", path_basename(ks_src), ks_dst);
          else
-            log_cb(RETRO_LOG_INFO, "WHDLoad installed '%s' to '%s'\n", path_basename(ks_src), ks_dst);
+            log_cb(RETRO_LOG_INFO, "WHDLoad installed \"%s\" to \"%s\".\n", path_basename(ks_src), ks_dst);
       }
    }
 }
@@ -5832,9 +5832,9 @@ static void whdload_prefs_copy(void)
    if (!path_is_valid(dst) && path_is_valid(src))
    {
       if (fcopy(src, dst) < 0)
-         log_cb(RETRO_LOG_INFO, "WHDLoad failed to install '%s'\n", filename);
+         log_cb(RETRO_LOG_INFO, "WHDLoad failed to install \"%s\".\n", filename);
       else
-         log_cb(RETRO_LOG_INFO, "WHDLoad installed '%s'\n", filename);
+         log_cb(RETRO_LOG_INFO, "WHDLoad installed \"%s\".\n", filename);
    }
 
    /* WHDLoad.key only when not found */
@@ -5848,9 +5848,9 @@ static void whdload_prefs_copy(void)
    if (!path_is_valid(dst) && path_is_valid(src))
    {
       if (fcopy(src, dst) < 0)
-         log_cb(RETRO_LOG_INFO, "WHDLoad failed to install '%s'\n", filename);
+         log_cb(RETRO_LOG_INFO, "WHDLoad failed to install \"%s\".\n", filename);
       else
-         log_cb(RETRO_LOG_INFO, "WHDLoad installed '%s'\n", filename);
+         log_cb(RETRO_LOG_INFO, "WHDLoad installed \"%s\".\n", filename);
    }
 
    /* WHDLoad.prefs always */
@@ -5873,9 +5873,9 @@ static void whdload_prefs_copy(void)
       }
 
       if (fcopy(src, dst) < 0)
-         log_cb(RETRO_LOG_INFO, "WHDLoad failed to update '%s'\n", filename);
+         log_cb(RETRO_LOG_INFO, "WHDLoad failed to update \"%s\".\n", filename);
       else
-         log_cb(RETRO_LOG_INFO, "WHDLoad updated '%s'\n", filename);
+         log_cb(RETRO_LOG_INFO, "WHDLoad updated \"%s\".\n", filename);
    }
 }
 
@@ -5887,7 +5887,7 @@ static void whdload_quitkey(void)
          || string_is_empty(currprefs.mountconfig[0].ci.volname))
       return;
 
-   log_cb(RETRO_LOG_INFO, "WHDLoad QuitKey triggered..\n");
+   log_cb(RETRO_LOG_INFO, "WHDLoad QuitKey triggered...\n");
    libretro_runloop_active = false;
 
    retro_key_down(RETROK_HASH);
@@ -5986,7 +5986,7 @@ static char* emu_config(int config)
    path_join(custom_config_path, retro_save_directory, custom_config_file);
    if (path_is_valid(custom_config_path))
    {
-      log_cb(RETRO_LOG_INFO, "Appending model preset: '%s'\n", custom_config_path);
+      log_cb(RETRO_LOG_INFO, "Appending model preset: \"%s\"...\n", custom_config_path);
 
       FILE *custom_config_fp;
       char filebuf[RETRO_PATH_MAX];
@@ -6382,47 +6382,47 @@ static bool retro_create_config(void)
          {
             if (strstr(full_path, "(A4030)") || strstr(full_path, "(030)"))
             {
-               log_cb(RETRO_LOG_INFO, "Found '(A4030)' or '(030)' in: '%s'\n", full_path);
+               log_cb(RETRO_LOG_INFO, "Found \"(A4030)\" or \"(030)\" in: \"%s\".\n", full_path);
                retro_config_preset("A4030");
             }
             else if (strstr(full_path, "(A4040)") || strstr(full_path, "(040)"))
             {
-               log_cb(RETRO_LOG_INFO, "Found '(A4040)' or '(040)' in: '%s'\n", full_path);
+               log_cb(RETRO_LOG_INFO, "Found \"(A4040)\" or \"(040)\" in: \"%s\".\n", full_path);
                retro_config_preset("A4040");
             }
             else if (strstr(full_path, "(A1200OG)") || strstr(full_path, "(A1200NF)"))
             {
-               log_cb(RETRO_LOG_INFO, "Found '(A1200OG)' or '(A1200NF)' in: '%s'\n", full_path);
+               log_cb(RETRO_LOG_INFO, "Found \"(A1200OG)\" or \"(A1200NF)\" in: \"%s\".\n", full_path);
                retro_config_preset("A1200OG");
             }
             else if (strstr(full_path, "(A1200)"))
             {
-               log_cb(RETRO_LOG_INFO, "Found '(A1200)' in: '%s'\n", full_path);
+               log_cb(RETRO_LOG_INFO, "Found \"(A1200)\" in: \"%s\".\n", full_path);
                retro_config_preset("A1200");
             }
             else if (strstr(full_path, "(A600)"))
             {
-               log_cb(RETRO_LOG_INFO, "Found '(A600)' in: '%s'\n", full_path);
+               log_cb(RETRO_LOG_INFO, "Found \"(A600)\" in: \"%s\".\n", full_path);
                retro_config_preset("A600");
             }
             else if (strstr(full_path, "(A500+)") || strstr(full_path, "(A500PLUS)"))
             {
-               log_cb(RETRO_LOG_INFO, "Found '(A500+)' or '(A500PLUS)' in: '%s'\n", full_path);
+               log_cb(RETRO_LOG_INFO, "Found \"(A500+)\" or \"(A500PLUS)\" in: \"%s\".\n", full_path);
                retro_config_preset("A500PLUS");
             }
             else if (strstr(full_path, "(A500OG)") || strstr(full_path, "(512K)") || strstr(full_path, "(512KB)"))
             {
-               log_cb(RETRO_LOG_INFO, "Found '(A500OG)' or '(512K)' or '(512KB)' in: '%s'\n", full_path);
+               log_cb(RETRO_LOG_INFO, "Found \"(A500OG)\" or \"(512K)\" or \"(512KB)\" in: \"%s\".\n", full_path);
                retro_config_preset("A500OG");
             }
             else if (strstr(full_path, "(A500)"))
             {
-               log_cb(RETRO_LOG_INFO, "Found '(A500)' in: '%s'\n", full_path);
+               log_cb(RETRO_LOG_INFO, "Found \"(A500)\" in: \"%s\".\n", full_path);
                retro_config_preset("A500");
             }
             else if (strstr(full_path, "AGA") || strstr(full_path, "AmigaCD") || strstr(full_path, "CD32"))
             {
-               log_cb(RETRO_LOG_INFO, "Found 'AGA' or 'AmigaCD' or 'CD32' in: '%s'\n", full_path);
+               log_cb(RETRO_LOG_INFO, "Found \"AGA\" or \"AmigaCD\" or \"CD32\" in: \"%s\".\n", full_path);
                /* Change to A1200 only if not already with AGA, and prevent overriding non-fast RAM preset */
                if (strstr(opt_model_hd, "A1200"))
                   retro_config_preset(opt_model_hd);
@@ -6431,14 +6431,14 @@ static bool retro_create_config(void)
             }
             else if (strstr(full_path, "ECS"))
             {
-               log_cb(RETRO_LOG_INFO, "Found 'ECS' in: '%s'\n", full_path);
+               log_cb(RETRO_LOG_INFO, "Found \"ECS\" in: \"%s\".\n", full_path);
                /* Change to A600 only if not already with ECS */
                if (!strstr(uae_preset, "A500PLUS"))
                   retro_config_preset("A600");
             }
             else if (strstr(full_path, "OCS"))
             {
-               log_cb(RETRO_LOG_INFO, "Found 'OCS' in: '%s'\n", full_path);
+               log_cb(RETRO_LOG_INFO, "Found \"OCS\" in: \"%s\".\n", full_path);
                /* Change to A500 only if not already with OCS */
                if (!strstr(uae_preset, "A500"))
                   retro_config_preset("A500");
@@ -6446,7 +6446,7 @@ static bool retro_create_config(void)
             else
             {
                /* No model specified */
-               log_cb(RETRO_LOG_INFO, "No model specified in: '%s'\n", full_path);
+               log_cb(RETRO_LOG_INFO, "No model specified in: \"%s\".\n", full_path);
 
                /* Hard disks must default to a machine with HD interface */
                if (!opt_use_boot_hd &&
@@ -6542,7 +6542,7 @@ static bool retro_create_config(void)
 
                if (!path_is_valid(whdload_prefs_path))
                {
-                  log_cb(RETRO_LOG_INFO, "WHDLoad.prefs '%s' not found, attempting to create..\n", whdload_prefs_path);
+                  log_cb(RETRO_LOG_INFO, "WHDLoad.prefs \"%s\" not found, attempting to create...\n", whdload_prefs_path);
 
                   char whdload_prefs_gz_path[RETRO_PATH_MAX];
                   path_join(whdload_prefs_gz_path, retro_system_directory, "WHDLoad.prefs.gz");
@@ -6559,7 +6559,7 @@ static bool retro_create_config(void)
                      retro_remove(whdload_prefs_gz_path);
                   }
                   else
-                     log_cb(RETRO_LOG_ERROR, "Unable to create WHDLoad.prefs: '%s'\n", whdload_prefs_path);
+                     log_cb(RETRO_LOG_ERROR, "Unable to create WHDLoad.prefs: \"%s\".\n", whdload_prefs_path);
                }
 
                FILE *whdload_prefs_new_fp;
@@ -6626,7 +6626,7 @@ static bool retro_create_config(void)
                         fclose(whdload_prefs_new_fp);
                      }
                      else
-                        log_cb(RETRO_LOG_ERROR, "Unable to create new WHDLoad.prefs: '%s'\n", whdload_prefs_new_path);
+                        log_cb(RETRO_LOG_ERROR, "Unable to create new WHDLoad.prefs: \"%s\".\n", whdload_prefs_new_path);
 
                      /* Remove old backup prefs */
                      retro_remove(whdload_prefs_backup_path);
@@ -6649,7 +6649,7 @@ static bool retro_create_config(void)
                   /* Verify WHDLoad */
                   if (!path_is_directory(whdload_path) || (path_is_directory(whdload_path) && !path_is_directory(whdload_c_path)))
                   {
-                     log_cb(RETRO_LOG_INFO, "WHDLoad image directory '%s' not found, attempting to create..\n", whdload_path);
+                     log_cb(RETRO_LOG_INFO, "WHDLoad image directory \"%s\" not found, attempting to create...\n", whdload_path);
                      path_mkdir(whdload_path);
 
                      char whdload_files_zip_path[RETRO_PATH_MAX];
@@ -6668,7 +6668,7 @@ static bool retro_create_config(void)
                      }
 
                      if (!path_is_directory(whdload_c_path))
-                        log_cb(RETRO_LOG_ERROR, "Unable to create WHDLoad image directory: '%s'\n", whdload_path);
+                        log_cb(RETRO_LOG_ERROR, "Unable to create WHDLoad image directory: \"%s\".\n", whdload_path);
                   }
                   /* Attach directory */
                   if (path_is_directory(whdload_path) && path_is_directory(whdload_c_path))
@@ -6705,15 +6705,15 @@ static bool retro_create_config(void)
                            if (fcmp(whdload_theme_path, whdload_theme_default_path))
                            {
                               if (fcopy(whdload_theme_default_path, whdload_theme_path) < 0)
-                                 log_cb(RETRO_LOG_INFO, "WHDLoad failed to change theme to 'Default'\n");
+                                 log_cb(RETRO_LOG_INFO, "WHDLoad failed to change theme to \"Default\".\n");
                               else
-                                 log_cb(RETRO_LOG_INFO, "WHDLoad changed theme to 'Default'\n");
+                                 log_cb(RETRO_LOG_INFO, "WHDLoad changed theme to \"Default\".\n");
                            }
                         }
                         else if (!path_is_valid(whdload_theme_default_path) && !path_is_valid(whdload_theme_native_path))
                            ; /* No-op fallback */
                         else
-                           log_cb(RETRO_LOG_INFO, "WHDLoad theme 'Default' not found. Delete 'WHDLoad' directory to reinstall!\n");
+                           log_cb(RETRO_LOG_INFO, "WHDLoad theme \"Default\" not found. Delete \"WHDLoad\" directory to reinstall!\n");
                      }
                      /* Native (gray) */
                      else
@@ -6723,13 +6723,13 @@ static bool retro_create_config(void)
                            if (fcmp(whdload_theme_path, whdload_theme_native_path))
                            {
                               if (fcopy(whdload_theme_native_path, whdload_theme_path) < 0)
-                                 log_cb(RETRO_LOG_INFO, "WHDLoad failed to change theme to 'Native'\n");
+                                 log_cb(RETRO_LOG_INFO, "WHDLoad failed to change theme to \"Native\".\n");
                               else
-                                 log_cb(RETRO_LOG_INFO, "WHDLoad changed theme to 'Native'\n");
+                                 log_cb(RETRO_LOG_INFO, "WHDLoad changed theme to \"Native\".\n");
                            }
                         }
                         else
-                           log_cb(RETRO_LOG_INFO, "WHDLoad theme 'Native' not found. Delete 'WHDLoad' directory to reinstall!\n");
+                           log_cb(RETRO_LOG_INFO, "WHDLoad theme \"Native\" not found. Delete \"WHDLoad\" directory to reinstall!\n");
                      }
                   }
 
@@ -6751,7 +6751,7 @@ static bool retro_create_config(void)
                      tmp_str = NULL;
                   }
                   else
-                     log_cb(RETRO_LOG_ERROR, "Unable to create WHDSaves image directory: '%s'\n", whdsaves_path);
+                     log_cb(RETRO_LOG_ERROR, "Unable to create WHDSaves image directory: \"%s\".\n", whdsaves_path);
                }
                /* WHDLoad HDF mode */
                else if (opt_use_whdload == 2)
@@ -6762,7 +6762,7 @@ static bool retro_create_config(void)
                   /* Verify WHDLoad.hdf */
                   if (!path_is_valid(whdload_hdf_path))
                   {
-                     log_cb(RETRO_LOG_INFO, "WHDLoad image file '%s' not found, attempting to create..\n", whdload_hdf_path);
+                     log_cb(RETRO_LOG_INFO, "WHDLoad image file \"%s\" not found, attempting to create...\n", whdload_hdf_path);
 
                      char whdload_hdf_gz_path[RETRO_PATH_MAX];
                      path_join(whdload_hdf_gz_path, retro_save_directory, "WHDLoad.hdf.gz");
@@ -6779,7 +6779,7 @@ static bool retro_create_config(void)
                         retro_remove(whdload_hdf_gz_path);
                      }
                      else
-                        log_cb(RETRO_LOG_ERROR, "Unable to create WHDLoad image file: '%s'\n", whdload_hdf_path);
+                        log_cb(RETRO_LOG_ERROR, "Unable to create WHDLoad image file: \"%s\".\n", whdload_hdf_path);
                   }
                   /* Attach HDF */
                   if (path_is_valid(whdload_hdf_path))
@@ -6795,7 +6795,7 @@ static bool retro_create_config(void)
                   path_join(whdsaves_hdf_path, retro_save_directory, "WHDSaves.hdf");
                   if (!path_is_valid(whdsaves_hdf_path))
                   {
-                     log_cb(RETRO_LOG_INFO, "WHDSaves image file '%s' not found, attempting to create..\n", whdsaves_hdf_path);
+                     log_cb(RETRO_LOG_INFO, "WHDSaves image file \"%s\" not found, attempting to create...\n", whdsaves_hdf_path);
 
                      char whdsaves_hdf_gz_path[RETRO_PATH_MAX];
                      path_join(whdsaves_hdf_gz_path, retro_save_directory, "WHDSaves.hdf.gz");
@@ -6812,7 +6812,7 @@ static bool retro_create_config(void)
                         retro_remove(whdsaves_hdf_gz_path);
                      }
                      else
-                        log_cb(RETRO_LOG_ERROR, "Unable to create WHDSaves image file: '%s'\n", whdsaves_hdf_path);
+                        log_cb(RETRO_LOG_ERROR, "Unable to create WHDSaves image file: \"%s\".\n", whdsaves_hdf_path);
                   }
                   /* Attach HDF */
                   if (path_is_valid(whdsaves_hdf_path))
@@ -6880,7 +6880,7 @@ static bool retro_create_config(void)
                dc->eject_state = false;
                if (dc->types[dc->index] == DC_IMAGE_TYPE_FLOPPY)
                {
-                  log_cb(RETRO_LOG_INFO, "Disk (%d) inserted in drive DF0: '%s'\n", dc->index + 1, dc->files[dc->index]);
+                  log_cb(RETRO_LOG_INFO, "Disk (%d) inserted in drive DF0: \"%s\".\n", dc->index + 1, dc->files[dc->index]);
                   tmp_str = utf8_to_local_string_alloc(dc->files[0]);
                   retro_config_append("floppy0=%s\n", tmp_str);
                   free(tmp_str);
@@ -6903,7 +6903,7 @@ static bool retro_create_config(void)
                         if (dc->types[i] != DC_IMAGE_TYPE_FLOPPY)
                            continue;
 
-                        log_cb(RETRO_LOG_INFO, "Disk (%d) inserted in drive DF%d: '%s'\n", floppy + 1, floppy, dc->files[i]);
+                        log_cb(RETRO_LOG_INFO, "Disk (%d) inserted in drive DF%d: \"%s\".\n", floppy + 1, floppy, dc->files[i]);
                         tmp_str = utf8_to_local_string_alloc(dc->files[i]);
                         retro_config_append("floppy%d=%s\n", floppy, tmp_str);
                         free(tmp_str);
@@ -6931,7 +6931,7 @@ static bool retro_create_config(void)
                      if (dc->types[i] != DC_IMAGE_TYPE_CD)
                         continue;
 
-                     log_cb(RETRO_LOG_INFO, "CD (%d) inserted in drive CD0: '%s'\n", drive + 1, dc->files[i]);
+                     log_cb(RETRO_LOG_INFO, "CD (%d) inserted in drive CD0: \"%s\".\n", drive + 1, dc->files[i]);
                      retro_config_append("cdimage0=%s,%s\n", dc->files[i], (opt_cd_startup_delayed_insert ? "delay" : "")); /* ","-suffix needed if filename contains "," */
                      drive++;
                   }
@@ -6970,17 +6970,17 @@ static bool retro_create_config(void)
          {
             if (strstr(full_path, "(CD32FR)") || strstr(full_path, "FastRAM"))
             {
-               log_cb(RETRO_LOG_INFO, "Found '(CD32FR)' or 'FastRAM' in: '%s'\n", full_path);
+               log_cb(RETRO_LOG_INFO, "Found \"(CD32FR)\" or \"FastRAM\" in: \"%s\".\n", full_path);
                retro_config_preset("CD32FR");
             }
             else if (strstr(full_path, "(CD32)") || strstr(full_path, "(CD32NF)"))
             {
-               log_cb(RETRO_LOG_INFO, "Found '(CD32)' or '(CD32NF)' in: '%s'\n", full_path);
+               log_cb(RETRO_LOG_INFO, "Found \"(CD32)\" or \"(CD32NF)\" in: \"%s\".\n", full_path);
                retro_config_preset("CD32");
             }
             else if (strstr(full_path, "CDTV"))
             {
-               log_cb(RETRO_LOG_INFO, "Found 'CDTV' in: '%s'\n", full_path);
+               log_cb(RETRO_LOG_INFO, "Found \"CDTV\" in: \"%s\".\n", full_path);
                retro_config_preset("CDTV");
             }
             else
@@ -6992,7 +6992,7 @@ static bool retro_create_config(void)
                   retro_config_preset(opt_model_cd);
 
                /* No model specified */
-               log_cb(RETRO_LOG_INFO, "No model specified in: '%s'\n", full_path);
+               log_cb(RETRO_LOG_INFO, "No model specified in: \"%s\".\n", full_path);
             }
          }
 
@@ -7045,7 +7045,7 @@ static bool retro_create_config(void)
             dc->index = 0;
             dc->eject_state = false;
             display_current_image(dc->labels[dc->index], true);
-            log_cb(RETRO_LOG_INFO, "CD (%d) inserted in drive CD0: '%s'\n", dc->index + 1, dc->files[dc->index]);
+            log_cb(RETRO_LOG_INFO, "CD (%d) inserted in drive CD0: \"%s\".\n", dc->index + 1, dc->files[dc->index]);
             retro_config_append("cdimage0=%s,%s\n", dc->files[0], (opt_cd_startup_delayed_insert ? "delay" : "")); /* ","-suffix needed if filename contains "," */
          }
 
@@ -7252,7 +7252,7 @@ static bool retro_create_config(void)
             dc->index = 0;
             dc->eject_state = false;
             display_current_image(dc->labels[dc->index], true);
-            log_cb(RETRO_LOG_INFO, "Disk (%d) inserted in drive DF0: '%s'\n", dc->index + 1, dc->files[dc->index]);
+            log_cb(RETRO_LOG_INFO, "Disk (%d) inserted in drive DF0: \"%s\".\n", dc->index + 1, dc->files[dc->index]);
          }
 
          /* Verify and write Kickstart */
@@ -7271,8 +7271,8 @@ static bool retro_create_config(void)
          retro_config_append(uae_config);
 
          /* Unsupported file format */
-         log_cb(RETRO_LOG_ERROR, "Unsupported file format: '%s'\n", full_path);
-         snprintf(retro_message_msg, sizeof(retro_message_msg), "Unsupported file format: '%s'", path_get_extension(full_path));
+         log_cb(RETRO_LOG_ERROR, "Unsupported file format: \"%s\".\n", full_path);
+         snprintf(retro_message_msg, sizeof(retro_message_msg), "Unsupported file format: \"%s\"", path_get_extension(full_path));
          retro_message = true;
       }
    }
@@ -7299,7 +7299,7 @@ static bool retro_create_config(void)
    path_join(configfile_path, retro_save_directory, LIBRETRO_PUAE_PREFIX "_global.uae");
    if (path_is_valid(configfile_path))
    {
-      log_cb(RETRO_LOG_INFO, "Appending global configuration: '%s'\n", configfile_path);
+      log_cb(RETRO_LOG_INFO, "Appending global configuration: \"%s\".\n", configfile_path);
 
       FILE *configfile;
       char filebuf[RETRO_PATH_MAX];
@@ -7318,7 +7318,7 @@ static bool retro_create_config(void)
          retro_save_directory, DIR_SEP_STR, path_basename(tmp_str), ".uae");
    if (path_is_valid(configfile_path))
    {
-      log_cb(RETRO_LOG_INFO, "Appending content configuration: '%s'\n", configfile_path);
+      log_cb(RETRO_LOG_INFO, "Appending content configuration: \"%s\".\n", configfile_path);
 
       FILE *configfile;
       char filebuf[RETRO_PATH_MAX];
@@ -7342,7 +7342,7 @@ static bool retro_create_config(void)
    }
 
    if (cpu_cycle_exact_force)
-      log_cb(RETRO_LOG_INFO, "Forcing Cycle-exact\n");
+      log_cb(RETRO_LOG_INFO, "Forcing Cycle-exact.\n");
 
    /* Scan for specific rows and print the final config in debug log for copypaste purposes */
    log_cb(RETRO_LOG_DEBUG, "Generated config:\n");
@@ -7933,7 +7933,7 @@ static void update_audiovideo(void)
                && retro_max_diwstop  == (458 * width_multiplier) && retro_max_diwstop_old  == (449 * width_multiplier))
          {
             locked_video_horizontal = true;
-            log_cb(RETRO_LOG_INFO, "Horizontal centering hack for '%s' active.\n", "North & South PAL floppy");
+            log_cb(RETRO_LOG_INFO, "Horizontal centering hack for \"%s\" active.\n", "North & South PAL floppy");
          }
          /* North & South PAL WHDLoad */
          else if (retro_max_diwstop - retro_min_diwstart == (329 * width_multiplier)
@@ -7942,7 +7942,7 @@ static void update_audiovideo(void)
                && retro_max_diwstop  == (458 * width_multiplier) && retro_max_diwstop_old  == (449 * width_multiplier))
          {
             locked_video_horizontal = true;
-            log_cb(RETRO_LOG_INFO, "Horizontal centering hack for '%s' active.\n", "North & South PAL WHDLoad");
+            log_cb(RETRO_LOG_INFO, "Horizontal centering hack for \"%s\" active.\n", "North & South PAL WHDLoad");
          }
          /* North & South NTSC floppy */
          else if (retro_max_diwstop - retro_min_diwstart == (329 * width_multiplier)
@@ -7952,7 +7952,7 @@ static void update_audiovideo(void)
                && retro_max_diwstop  == (458 * width_multiplier) && retro_max_diwstop_old  == (449 * width_multiplier))
          {
             locked_video_horizontal = true;
-            log_cb(RETRO_LOG_INFO, "Horizontal centering hack for '%s' active.\n", "North & South NTSC floppy");
+            log_cb(RETRO_LOG_INFO, "Horizontal centering hack for \"%s\" active.\n", "North & South NTSC floppy");
          }
          /* North & South NTSC WHDLoad */
          else if (retro_max_diwstop - retro_min_diwstart == (329 * width_multiplier)
@@ -7961,7 +7961,7 @@ static void update_audiovideo(void)
                && (retro_max_diwstop == (449 * width_multiplier) || retro_max_diwstop == (458 * width_multiplier)) && (retro_max_diwstop_old == (447 * width_multiplier) || retro_max_diwstop_old == (449 * width_multiplier)))
          {
             locked_video_horizontal = true;
-            log_cb(RETRO_LOG_INFO, "Horizontal centering hack for '%s' active.\n", "North & South NTSC WHDLoad");
+            log_cb(RETRO_LOG_INFO, "Horizontal centering hack for \"%s\" active.\n", "North & South NTSC WHDLoad");
          }
          /* Chase HQ WHDLoad */
          else if (retro_thisframe_first_drawn_line == 50 && retro_thisframe_last_drawn_line == 249
@@ -7969,7 +7969,7 @@ static void update_audiovideo(void)
                && retro_max_diwstop  == (457 * width_multiplier) && retro_max_diwstop_old  == (449 * width_multiplier))
          {
             locked_video_horizontal = true;
-            log_cb(RETRO_LOG_INFO, "Horizontal centering hack for '%s' active.\n", "Chase HQ WHDLoad");
+            log_cb(RETRO_LOG_INFO, "Horizontal centering hack for \"%s\" active.\n", "Chase HQ WHDLoad");
          }
          /* Test Drive */
          else if (retro_thisframe_first_drawn_line ==  44 && retro_thisframe_last_drawn_line  == 243
@@ -7977,7 +7977,7 @@ static void update_audiovideo(void)
                && retro_max_diwstop  == (448 * width_multiplier) && retro_max_diwstop_old  == (449 * width_multiplier))
          {
             locked_video_horizontal = true;
-            log_cb(RETRO_LOG_INFO, "Horizontal centering hack for '%s' active.\n", "Test Drive");
+            log_cb(RETRO_LOG_INFO, "Horizontal centering hack for \"%s\" active.\n", "Test Drive");
          }
          /* Test Drive II */
          else if (retro_thisframe_first_drawn_line == 160 && retro_thisframe_last_drawn_line  == 243
@@ -7985,7 +7985,7 @@ static void update_audiovideo(void)
                && retro_max_diwstop  == (448 * width_multiplier) && retro_max_diwstop_old  == (449 * width_multiplier))
          {
             locked_video_horizontal = true;
-            log_cb(RETRO_LOG_INFO, "Horizontal centering hack for '%s' active.\n", "Test Drive II");
+            log_cb(RETRO_LOG_INFO, "Horizontal centering hack for \"%s\" active.\n", "Test Drive II");
          }
          /* Toki */
          else if (retro_thisframe_first_drawn_line == 60 && retro_thisframe_last_drawn_line == 259
@@ -7993,7 +7993,7 @@ static void update_audiovideo(void)
                && retro_max_diwstop  == (401 * width_multiplier) && retro_max_diwstop_old  == (465 * width_multiplier))
          {
             locked_video_horizontal = true;
-            log_cb(RETRO_LOG_INFO, "Horizontal centering hack for '%s' active.\n", "Toki");
+            log_cb(RETRO_LOG_INFO, "Horizontal centering hack for \"%s\" active.\n", "Toki");
          }
 #endif
 
