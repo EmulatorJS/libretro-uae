@@ -4,6 +4,7 @@
 #include "libretro-mapper.h"
 #include "encodings/utf.h"
 #include "streams/file_stream.h"
+#include "../libretro-common/include/file/file_path.h"
 
 #include "sysconfig.h"
 #include "sysdeps.h"
