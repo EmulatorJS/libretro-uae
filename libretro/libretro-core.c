@@ -16,6 +16,7 @@
 #include "inputdevice.h"
 #include "savestate.h"
 #include "custom.h"
+#include "drawing.h"
 #include "xwin.h"
 #include "disk.h"
 #include "gui.h"
@@ -23,20 +24,26 @@
 #include "memory.h"
 #include "sounddep/sound.h"
 
-#ifndef MAX_FLOPPY_DRIVES
-#define MAX_FLOPPY_DRIVES 4
-#endif
-
 #ifndef MAX_STOP
 #define MAX_STOP 30000
 #endif
+
+/* Config parse copypasta from cfgfile.c */
+static const TCHAR *cscompa[] = {
+   _T("-"), _T("Generic"), _T("CDTV"), _T("CDTV-CR"), _T("CD32"), _T("A500"), _T("A500+"), _T("A600"),
+   _T("A1000"), _T("A1200"), _T("A2000"), _T("A3000"), _T("A3000T"), _T("A4000"), _T("A4000T"),
+   _T("Velvet"), _T("Casablanca"), _T("DraCo"),
+   NULL
+};
+static const TCHAR *csmode[] = { _T("ocs"), _T("ecs_agnus"), _T("ecs_denise"), _T("ecs"), _T("aga"), 0 };
 
 #ifdef USE_LIBRETRO_VFS
 #undef utf8_to_local_string_alloc
 #define utf8_to_local_string_alloc strdup
 #endif
 
-uint8_t libretro_runloop_active = 0;
+bool libretro_runloop_active = false;
+bool libretro_frame_end = false;
 unsigned short int retro_bmp[RETRO_BMP_SIZE] = {0};
 unsigned int retro_bmp_offset = 0;
 unsigned short int defaultw = EMULATOR_DEF_WIDTH / 2;
@@ -44,6 +51,7 @@ unsigned short int defaulth = EMULATOR_DEF_HEIGHT / 2;
 unsigned short int retrow = EMULATOR_DEF_WIDTH / 2;
 unsigned short int retroh = EMULATOR_DEF_HEIGHT / 2;
 unsigned short int retrow_max = EMULATOR_DEF_WIDTH;
+unsigned short int retroh_max = EMULATOR_DEF_HEIGHT;
 unsigned short int retrow_crop = 0;
 unsigned short int retroh_crop = 0;
 unsigned short int retrox_crop = 0;
@@ -51,9 +59,11 @@ unsigned short int retroy_crop = 0;
 float aspect_ratio = 0;
 
 extern int bplcon0;
+extern int detected_screen_resolution;
 extern int diwlastword_total;
 extern int diwfirstword_total;
 extern int m68k_go(int may_quit, int resume);
+extern void compute_vsynctime(void);
 
 unsigned int opt_model_options_display = 0;
 unsigned int opt_audio_options_display = 0;
@@ -64,15 +74,27 @@ char opt_model_fd[10] = {0};
 char opt_model_hd[10] = {0};
 char opt_model_cd[10] = {0};
 char opt_kickstart[20] = {0};
-static int opt_chipmem_size = -1;
-static int opt_bogomem_size = -1;
-static int opt_fastmem_size = -1;
-static int opt_z3mem_size = -1;
-static int opt_cpu_model = -1;
-static int opt_fpu_model = -1;
-bool opt_region_auto = true;
-bool opt_video_resolution_auto = false;
-bool opt_video_vresolution_auto = false;
+
+struct preset_options
+{
+   int cpu_model;
+   int fpu_model;
+   int mmu_model;
+   int chipmem_size;
+   int bogomem_size;
+   int fastmem_size;
+   int z3mem_size;
+   int chipset;
+   int cs_compatible;
+   int address_space_24;
+};
+
+static struct preset_options override_opt;
+static struct preset_options preset_opt;
+
+static bool opt_region_auto = true;
+static char opt_video_resolution_auto = RESOLUTION_AUTO_NONE;
+static bool opt_video_vresolution_auto = false;
 bool opt_floppy_sound_empty_mute = false;
 bool opt_floppy_multidrive = false;
 bool opt_floppy_write_redirect = false;
@@ -81,6 +103,7 @@ uint8_t opt_use_whdload = 1;
 uint8_t opt_use_whdload_theme = 0;
 uint8_t opt_use_whdload_prefs = 0;
 bool opt_use_whdload_nowritecache = false;
+bool opt_use_whdload_buttonwait = true;
 uint8_t opt_use_boot_hd = 0;
 bool opt_shared_nvram = false;
 bool opt_cd_startup_delayed_insert = false;
@@ -140,6 +163,7 @@ static bool fake_ntsc = false;
 static bool real_ntsc = false;
 static signed char forced_video = -1;
 static bool locked_video_horizontal = false;
+bool video_productivity = false;
 bool request_update_av_info = false;
 bool retro_av_info_change_timing = false;
 bool retro_av_info_change_geometry = true;
@@ -149,8 +173,6 @@ bool request_reset_drawing = false;
 bool request_reset_soft = false;
 bool request_reset_hard = false;
 static unsigned char request_init_custom_timer = 0;
-static unsigned char startup_init_custom_timer = 80;
-static unsigned char request_check_prefs_timer = 0;
 unsigned char crop_id = 0;
 unsigned char opt_crop_id = 0;
 unsigned char crop_mode_id = 0;
@@ -196,7 +218,6 @@ bool opt_aspect_ratio_locked = false;
 
 struct zfile *retro_deserialize_file = NULL;
 static size_t save_state_file_size = 0;
-static unsigned save_state_grace = 2;
 
 unsigned int retro_devices[RETRO_DEVICES] = {0};
 extern void display_current_image(const char *image, bool inserted);
@@ -233,14 +254,19 @@ dc_storage *dc = NULL;
 
 /* Configs */
 #define UAE_CONFIG_SIZE 32768
-static char uae_model[1024] = {0};
 static char uae_preset[20] = {0};
 static char uae_kickstart[RETRO_PATH_MAX] = {0};
 static char uae_kickstart_ext[RETRO_PATH_MAX] = {0};
 static char uae_config[4096] = {0};
-static char uae_custom_config[2048] = {0};
+static char uae_model_config[1024] = {0};
 static char uae_preset_config[2048] = {0};
+static char uae_custom_config[2048] = {0};
 char uae_full_config[UAE_CONFIG_SIZE] = {0};
+
+char *retro_get_uae_full_config(void)
+{
+   return uae_full_config;
+}
 
 /* Audio output buffer */
 static struct {
@@ -631,6 +657,23 @@ static void floppy_close_redirect(int8_t drive)
    }
 }
 
+static bool is_hdf_rdb(const char *path)
+{
+   /* Detect RDB */
+   bool hdf_rdb = false;
+   FILE *hdf_fp;
+   char filebuf[4];
+   if ((hdf_fp = fopen(path, "r")))
+   {
+      fgets(filebuf, sizeof(filebuf), hdf_fp);
+      fclose(hdf_fp);
+
+      if (!strcmp(filebuf, "RDS"))
+         hdf_rdb = true;
+   }
+   return hdf_rdb;
+}
+
 static void retro_set_paths(void)
 {
    const char *system_dir = NULL;
@@ -859,6 +902,8 @@ static void retro_set_core_options()
          {
             { "auto", "Automatic" },
             { "aros", "AROS" },
+            { "kick31034.A1000", "v1.1 rev 31.034 (A1000 NTSC)" },
+            { "kick32034.A1000", "v1.1 rev 32.034 (A1000 PAL)" },
             { "kick33180.A500", "v1.2 rev 33.180 (A500-A2000)" },
             { "kick34005.A500", "v1.3 rev 34.005 (A500-A1000-A2000-CDTV)" },
             { "kick37175.A500", "v2.04 rev 37.175 (A500+)" },
@@ -1041,7 +1086,7 @@ static void retro_set_core_options()
          "puae_cpu_compatibility",
          "System > CPU Compatibility",
          "CPU Compatibility",
-         "Some games have graphic and/or speed issues without 'Cycle-exact'. 'Cycle-exact' can be forced with '(CE)' file path tag.",
+         "Some games have graphic and/or speed issues without 'Cycle-exact'. 'Cycle-exact' can be forced with '(CE)' file path tag. (DMA/Memory) is forced to (Full) with 68000.",
          NULL,
          "system",
          {
@@ -1221,10 +1266,24 @@ static void retro_set_core_options()
          "disabled"
       },
       {
+         "puae_use_whdload_buttonwait",
+         "Media > WHDLoad ButtonWait",
+         "WHDLoad ButtonWait",
+         "Wait for a button press on internal loading sections if the slave supports it.\nCore restart required.",
+         NULL,
+         "media",
+         {
+            { "disabled", NULL },
+            { "enabled", NULL },
+            { NULL, NULL },
+         },
+         "enabled"
+      },
+      {
          "puae_use_whdload_nowritecache",
          "Media > WHDLoad NoWriteCache",
          "WHDLoad NoWriteCache",
-         "Write save data immediately or on WHDLoad quit. Write cache enabled runs the core a few frames after frontend quit in order to trigger WHDLoad quit and flush the cache.\nCore restart required.",
+         "Write cache requires running the core a few frames after closing content to trigger WHDLoad quit and flush cache to disk.\nQuitKey = '$2b' = '#' = 'LCtrl + Backslash'.\nCore restart required.",
          NULL,
          "media",
          {
@@ -1316,13 +1375,14 @@ static void retro_set_core_options()
          "puae_video_aspect",
          "Video > Pixel Aspect Ratio",
          "Pixel Aspect Ratio",
-         "Hotkey toggling disables this option until core restart.\n- 'PAL': 1/1 = 1.000\n- 'NTSC': 44/52 = 0.846",
+         "Hotkey toggling disables this option until core restart.\n- 'PAL': 26/25 = 1.04\n- 'NTSC': 43/50 = 0.86",
          NULL,
          "video",
          {
             { "auto", "Automatic" },
             { "PAL", NULL },
             { "NTSC", NULL },
+            { "1:1", NULL },
             { NULL, NULL },
          },
          "auto"
@@ -1331,11 +1391,13 @@ static void retro_set_core_options()
          "puae_video_resolution",
          "Video > Resolution",
          "Resolution",
-         "Output width:\n- 'Automatic' defaults to 'High' and switches to 'Super-High' when needed.",
+         "Output width:\n- 'Automatic' uses 'High' at minimum.\n- 'Automatic (Low)' allows 'Low'.\n- 'Automatic (Super-High)' sets max size already at startup.",
          NULL,
          "video",
          {
             { "auto", "Automatic" },
+            { "auto-lores", "Automatic (Low)" },
+            { "auto-superhires", "Automatic (Super-High)" },
             { "lores", "Low 360px" },
             { "hires", "High 720px" },
             { "superhires", "Super-High 1440px" },
@@ -1394,28 +1456,6 @@ static void retro_set_core_options()
          "enabled"
       },
       {
-         "puae_zoom_mode",
-         "Video > Zoom Mode",
-         "Zoom Mode",
-         "Hidden placeholder for backwards compatibility.",
-         NULL,
-         "video",
-         {
-            { "deprecated", NULL },
-            { "disabled", NULL },
-            { "minimum", "Minimum" },
-            { "smaller", "Smaller" },
-            { "small", "Small" },
-            { "medium", "Medium" },
-            { "large", "Large" },
-            { "larger", "Larger" },
-            { "maximum", "Maximum" },
-            { "auto", "Automatic" },
-            { NULL, NULL },
-         },
-         "deprecated"
-      },
-      {
          "puae_crop_mode",
          "Video > Crop Mode",
          "Crop Mode",
@@ -1433,26 +1473,6 @@ static void retro_set_core_options()
             { NULL, NULL },
          },
          "both"
-      },
-      {
-         "puae_zoom_mode_crop",
-         "Video > Zoom Mode Crop",
-         "Zoom Mode Crop",
-         "Hidden placeholder for backwards compatibility.",
-         NULL,
-         "video",
-         {
-            { "deprecated", NULL },
-            { "both", "Horizontal + Vertical" },
-            { "horizontal", "Horizontal" },
-            { "vertical", "Vertical" },
-            { "16:9", "16:9" },
-            { "16:10", "16:10" },
-            { "4:3", "4:3" },
-            { "5:4", "5:4" },
-            { NULL, NULL },
-         },
-         "deprecated"
       },
       {
          "puae_vertical_pos",
@@ -2038,7 +2058,8 @@ static void retro_set_core_options()
          NULL,
          "input",
          {
-            { "1", "0%" },
+            { "0", "disabled" },
+            { "1", "16%" },
             { "2", "33%" },
             { "3", "50%" },
             { "4", "66%" },
@@ -2121,7 +2142,7 @@ static void retro_set_core_options()
          "puae_physical_keyboard_pass_through",
          "Input > Keyboard Pass-through",
          "Keyboard Pass-through",
-         "'ON' passes all physical keyboard events to the core. 'OFF' prevents RetroPad keys from generating keyboard events.",
+         "'ON' passes all physical keyboard events to the core. 'OFF' prevents RetroPad keys from generating keyboard events.\nNOTE: This is a legacy option for old frontends that do not block keyboard events when using RetroPad, so it does nothing with current RetroArch.",
          NULL,
          "input",
          {
@@ -2225,16 +2246,6 @@ static void retro_set_core_options()
          "Hotkey > Toggle Crop",
          "Toggle Crop",
          "Press the mapped key to toggle crop.",
-         NULL,
-         "hotkey",
-         {{ NULL, NULL }},
-         "---"
-      },
-      {
-         "puae_mapper_zoom_mode_toggle",
-         "Hotkey > Toggle Zoom Mode",
-         "Toggle Zoom Mode",
-         "Hidden placeholder for backwards compatibility.",
          NULL,
          "hotkey",
          {{ NULL, NULL }},
@@ -3076,15 +3087,6 @@ static void retro_set_options_display(void)
    option_display.key = "puae_crop_delay";
    environ_cb(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY, &option_display);
 
-   /* Legacy zoom always hidden */
-   option_display.visible = false;
-   option_display.key = "puae_zoom_mode";
-   environ_cb(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY, &option_display);
-   option_display.key = "puae_zoom_mode_crop";
-   environ_cb(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY, &option_display);
-   option_display.key = "puae_mapper_zoom_mode_toggle";
-   environ_cb(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY, &option_display);
-
    /*** Options display ***/
    if (libretro_supports_option_categories)
    {
@@ -3251,20 +3253,14 @@ static void retro_set_options_display(void)
    environ_cb(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY, &option_display);
 }
 
-static bool updating_variables = false;
 static void update_variables(void);
 static bool retro_update_display(void)
 {
-   if (updating_variables)
-      return false;
-
    /* Core options */
    bool updated = false;
    if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE, &updated) && updated)
-   {
       update_variables();
-      retro_set_options_display();
-   }
+
    return updated;
 }
 
@@ -3317,53 +3313,128 @@ char* get_variable(const char* key)
    return NULL;
 }
 
+static void retro_set_geometry(unsigned video_config, bool init)
+{
+   unsigned w = PUAE_VIDEO_WIDTH;
+   unsigned h = PUAE_VIDEO_HEIGHT_PAL;
+
+   switch (video_config)
+   {
+      case PUAE_VIDEO_PAL_LO:
+         w = PUAE_VIDEO_WIDTH / 2;
+         h = PUAE_VIDEO_HEIGHT_PAL / 2;
+         break;
+      case PUAE_VIDEO_PAL_HI:
+         w = PUAE_VIDEO_WIDTH;
+         h = PUAE_VIDEO_HEIGHT_PAL / 2;
+         break;
+      case PUAE_VIDEO_PAL_HI_DL:
+         w = PUAE_VIDEO_WIDTH;
+         h = PUAE_VIDEO_HEIGHT_PAL;
+         break;
+      case PUAE_VIDEO_PAL_SUHI:
+         w = PUAE_VIDEO_WIDTH * 2;
+         h = PUAE_VIDEO_HEIGHT_PAL / 2;
+         break;
+      case PUAE_VIDEO_PAL_SUHI_DL:
+         w = PUAE_VIDEO_WIDTH * 2;
+         h = PUAE_VIDEO_HEIGHT_PAL;
+         break;
+
+      case PUAE_VIDEO_NTSC_LO:
+         w = PUAE_VIDEO_WIDTH / 2;
+         h = PUAE_VIDEO_HEIGHT_NTSC / 2;
+         break;
+      case PUAE_VIDEO_NTSC_HI:
+         w = PUAE_VIDEO_WIDTH;
+         h = PUAE_VIDEO_HEIGHT_NTSC / 2;
+         break;
+      case PUAE_VIDEO_NTSC_HI_DL:
+         w = PUAE_VIDEO_WIDTH;
+         h = PUAE_VIDEO_HEIGHT_NTSC;
+         break;
+      case PUAE_VIDEO_NTSC_SUHI:
+         w = PUAE_VIDEO_WIDTH * 2;
+         h = PUAE_VIDEO_HEIGHT_NTSC / 2;
+         break;
+      case PUAE_VIDEO_NTSC_SUHI_DL:
+         w = PUAE_VIDEO_WIDTH * 2;
+         h = PUAE_VIDEO_HEIGHT_NTSC;
+         break;
+   }
+
+   if (init)
+   {
+      defaultw = w;
+      defaulth = h;
+   }
+   else
+   {
+      retrow = w;
+      retroh = h;
+   }
+}
+
+#define GET_VAR(x) \
+   var.key   = "puae_" x; \
+   var.value = NULL; \
+   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+
 static void update_variables(void)
 {
    struct retro_variable var = {0};
 
-   updating_variables = true;
+   uae_model_config[0] = '\0';
+   uae_config[0]       = '\0';
 
-   uae_model[0]  = '\0';
-   uae_config[0] = '\0';
-
-   var.key = "puae_model";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("model")
    {
       strlcpy(opt_model, var.value, sizeof(opt_model));
+
+      if (libretro_runloop_active)
+      {
+         changed_prefs.chipset_mask = (preset_opt.chipset == 0 ? 0
+            : preset_opt.chipset == 1 ? CSMASK_ECS_AGNUS
+            : preset_opt.chipset == 2 ? CSMASK_ECS_DENISE
+            : preset_opt.chipset == 3 ? CSMASK_ECS_DENISE | CSMASK_ECS_AGNUS
+            : CSMASK_AGA | CSMASK_ECS_DENISE | CSMASK_ECS_AGNUS);
+
+         changed_prefs.cs_compatible = currprefs.cs_compatible = preset_opt.cs_compatible;
+         built_in_chipset_prefs(&changed_prefs);
+
+         changed_prefs.address_space_24 = preset_opt.address_space_24;
+      }
    }
 
-   var.key = "puae_model_fd";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("model_fd")
    {
       strlcpy(opt_model_fd, var.value, sizeof(opt_model_fd));
    }
 
-   var.key = "puae_model_hd";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("model_hd")
    {
       strlcpy(opt_model_hd, var.value, sizeof(opt_model_hd));
    }
 
-   var.key = "puae_model_cd";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("model_cd")
    {
       strlcpy(opt_model_cd, var.value, sizeof(opt_model_cd));
    }
 
-   var.key = "puae_kickstart";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("kickstart")
    {
       strlcpy(opt_kickstart, var.value, sizeof(opt_kickstart));
+
+      if (libretro_runloop_active)
+      {
+         if (!strcmp(opt_kickstart, "aros"))
+            strcpy(changed_prefs.romfile, "");
+         else
+            strcpy(changed_prefs.romfile, uae_kickstart);
+      }
    }
 
-   var.key = "puae_cart_file";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("cart_file")
    {
       char cart_full[RETRO_PATH_MAX] = {0};
 
@@ -3384,9 +3455,7 @@ static void update_variables(void)
       }
    }
 
-   var.key = "puae_video_standard";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("video_standard")
    {
       if (strstr(var.value, "auto")) opt_region_auto = true;
       else                           opt_region_auto = false;
@@ -3423,14 +3492,13 @@ static void update_variables(void)
       }
    }
 
-   var.key = "puae_video_aspect";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("video_aspect")
    {
       int video_config_aspect_prev = video_config_aspect;
 
       if      (!strcmp(var.value, "PAL"))  video_config_aspect = PUAE_VIDEO_PAL;
       else if (!strcmp(var.value, "NTSC")) video_config_aspect = PUAE_VIDEO_NTSC;
+      else if (!strcmp(var.value, "1:1"))  video_config_aspect = PUAE_VIDEO_1x1;
       else                                 video_config_aspect = 0;
 
       /* Revert if aspect ratio is locked */
@@ -3438,9 +3506,7 @@ static void update_variables(void)
          video_config_aspect = video_config_aspect_prev;
    }
 
-   var.key = "puae_video_allow_hz_change";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("video_allow_hz_change")
    {
       if      (!strcmp(var.value, "disabled")) video_config_allow_hz_change = 0;
       else if (!strcmp(var.value, "enabled"))  video_config_allow_hz_change = 1;
@@ -3460,11 +3526,9 @@ static void update_variables(void)
       }
    }
 
-   var.key = "puae_video_resolution";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("video_resolution")
    {
-      opt_video_resolution_auto = false;
+      opt_video_resolution_auto = RESOLUTION_AUTO_NONE;
 
       if (!strcmp(var.value, "lores"))
       {
@@ -3493,9 +3557,13 @@ static void update_variables(void)
          if (libretro_runloop_active)
             changed_prefs.gfx_resolution = RES_SUPERHIRES;
       }
-      else if (!strcmp(var.value, "auto"))
+      else if (!strcmp(var.value, "auto") || !strcmp(var.value, "auto-lores") || !strcmp(var.value, "auto-superhires"))
       {
-         opt_video_resolution_auto = true;
+         opt_video_resolution_auto = RESOLUTION_AUTO_HIRES;
+         if (!strcmp(var.value, "auto-lores"))
+            opt_video_resolution_auto = RESOLUTION_AUTO_LORES;
+         else if (!strcmp(var.value, "auto-superhires"))
+            opt_video_resolution_auto = RESOLUTION_AUTO_SUPERHIRES;
 
          if (video_config_old & PUAE_VIDEO_SUPERHIRES)
          {
@@ -3515,6 +3583,20 @@ static void update_variables(void)
             if (libretro_runloop_active)
                changed_prefs.gfx_resolution = RES_HIRES;
          }
+
+         /* Prevent resetting to hires if already at lores in auto-lores */
+         if (libretro_runloop_active)
+         {
+            if (     opt_video_resolution_auto == RESOLUTION_AUTO_LORES
+                  && detected_screen_resolution == RES_LORES)
+            {
+               video_config &= ~PUAE_VIDEO_HIRES;
+               video_config &= ~PUAE_VIDEO_SUPERHIRES;
+               retro_max_diwlastword = retro_max_diwlastword_hires / 2;
+               width_multiplier = 1;
+               changed_prefs.gfx_resolution = RES_LORES;
+            }
+         }
       }
 
       /* Resolution change needs init_custom() to be done after reset_drawing() is done */
@@ -3522,9 +3604,7 @@ static void update_variables(void)
          request_init_custom_timer = 2;
    }
 
-   var.key = "puae_video_vresolution";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("video_vresolution")
    {
       opt_video_vresolution_auto = false;
 
@@ -3571,9 +3651,7 @@ static void update_variables(void)
          request_init_custom_timer = 2;
    }
 
-   var.key = "puae_statusbar";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("statusbar")
    {
       opt_statusbar = 0;
 
@@ -3597,9 +3675,7 @@ static void update_variables(void)
       opt_statusbar_position_old = opt_statusbar_position;
    }
 
-   var.key = "puae_statusbar_startup";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("statusbar_startup")
    {
       if (!libretro_runloop_active)
       {
@@ -3610,17 +3686,13 @@ static void update_variables(void)
       }
    }
 
-   var.key = "puae_statusbar_messages";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("statusbar_messages")
    {
       if (!strcmp(var.value, "enabled"))
          opt_statusbar |= STATUSBAR_MESSAGES;
    }
 
-   var.key = "puae_vkbd_theme";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("vkbd_theme")
    {
       if      (strstr(var.value, "auto"))    opt_vkbd_theme = 0;
       else if (strstr(var.value, "beige"))   opt_vkbd_theme = 1;
@@ -3631,9 +3703,7 @@ static void update_variables(void)
       if      (strstr(var.value, "outline")) opt_vkbd_theme |= 0x80;
    }
 
-   var.key = "puae_vkbd_transparency";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("vkbd_transparency")
    {
       if      (!strcmp(var.value, "0%"))   opt_vkbd_alpha = GRAPH_ALPHA_100;
       else if (!strcmp(var.value, "25%"))  opt_vkbd_alpha = GRAPH_ALPHA_75;
@@ -3642,9 +3712,7 @@ static void update_variables(void)
       else if (!strcmp(var.value, "100%")) opt_vkbd_alpha = GRAPH_ALPHA_0;
    }
 
-   var.key = "puae_vkbd_dimming";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("vkbd_dimming")
    {
       if      (!strcmp(var.value, "0%"))   opt_vkbd_dim_alpha = GRAPH_ALPHA_0;
       else if (!strcmp(var.value, "25%"))  opt_vkbd_dim_alpha = GRAPH_ALPHA_25;
@@ -3653,127 +3721,178 @@ static void update_variables(void)
       else if (!strcmp(var.value, "100%")) opt_vkbd_dim_alpha = GRAPH_ALPHA_100;
    }
 
-   var.key = "puae_chipmem_size";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("chipmem_size")
    {
-      opt_chipmem_size = -1;
+      override_opt.chipmem_size = -1;
+      if (!strstr(var.value, "auto"))
+         override_opt.chipmem_size = atoi(var.value);
+
       if (!strstr(var.value, "auto"))
       {
-         opt_chipmem_size = atoi(var.value);
-
          strcat(uae_config, "chipmem_size=");
          strcat(uae_config, var.value);
          strcat(uae_config, "\n");
       }
+
+      if (libretro_runloop_active)
+      {
+         if (!strstr(var.value, "auto"))
+            changed_prefs.chipmem.size = override_opt.chipmem_size * 0x80000;
+         else
+            changed_prefs.chipmem.size = preset_opt.chipmem_size * 0x80000;
+      }
    }
 
-   var.key = "puae_bogomem_size";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("bogomem_size")
    {
-      opt_bogomem_size = -1;
+      override_opt.bogomem_size = -1;
+      if (!strstr(var.value, "auto"))
+         override_opt.bogomem_size = atoi(var.value);
+
       if (!strstr(var.value, "auto"))
       {
-         opt_bogomem_size = atoi(var.value);
-
          strcat(uae_config, "bogomem_size=");
          strcat(uae_config, var.value);
          strcat(uae_config, "\n");
       }
+
+      if (libretro_runloop_active)
+      {
+         if (!strstr(var.value, "auto"))
+            changed_prefs.bogomem.size = override_opt.bogomem_size * 0x40000;
+         else
+            changed_prefs.bogomem.size = preset_opt.bogomem_size * 0x40000;
+      }
    }
 
-   var.key = "puae_fastmem_size";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("fastmem_size")
    {
-      opt_fastmem_size = -1;
+      override_opt.fastmem_size = -1;
+      if (!strstr(var.value, "auto"))
+         override_opt.fastmem_size = atoi(var.value);
+
       if (!strstr(var.value, "auto"))
       {
-         opt_fastmem_size = atoi(var.value);
-
          strcat(uae_config, "fastmem_size=");
          strcat(uae_config, var.value);
          strcat(uae_config, "\n");
       }
-   }
 
-   var.key = "puae_z3mem_size";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
-   {
-      opt_z3mem_size = -1;
-      if (!strstr(var.value, "auto"))
+      if (libretro_runloop_active)
       {
-         opt_z3mem_size = atoi(var.value);
-
-         strcat(uae_config, "cpu_24bit_addressing=false\n");
-
-         strcat(uae_config, "z3mem_size=");
-         strcat(uae_config, var.value);
-         strcat(uae_config, "\n");
+         if (!strstr(var.value, "auto"))
+            changed_prefs.fastmem[0].size = override_opt.fastmem_size * 1024 * 1024;
+         else
+            changed_prefs.fastmem[0].size = preset_opt.fastmem_size * 1024 * 1024;
       }
    }
 
-   var.key = "puae_cpu_model";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("z3mem_size")
    {
-      opt_cpu_model = -1;
+      override_opt.z3mem_size = -1;
+      if (!strstr(var.value, "auto"))
+         override_opt.z3mem_size = atoi(var.value);
+
       if (!strstr(var.value, "auto"))
       {
-         opt_cpu_model = atoi(var.value);
+         strcat(uae_config, "z3mem_size=");
+         strcat(uae_config, var.value);
+         strcat(uae_config, "\n");
 
+         strcat(uae_config, "cpu_24bit_addressing=false\n");
+      }
+
+      if (libretro_runloop_active)
+      {
+         if (!strstr(var.value, "auto"))
+         {
+            changed_prefs.z3fastmem[0].size = override_opt.z3mem_size * 1024 * 1024;
+            changed_prefs.address_space_24  = false;
+         }
+         else
+         {
+            changed_prefs.z3fastmem[0].size = preset_opt.z3mem_size * 1024 * 1024;
+            changed_prefs.address_space_24  = true;
+         }
+      }
+   }
+
+   GET_VAR("cpu_model")
+   {
+      override_opt.cpu_model = -1;
+      if (!strstr(var.value, "auto"))
+         override_opt.cpu_model = atoi(var.value);
+
+      if (!strstr(var.value, "auto"))
+      {
          strcat(uae_config, "cpu_model=");
          strcat(uae_config, var.value);
          strcat(uae_config, "\n");
 
-         if (opt_cpu_model > 68020)
+         if (override_opt.cpu_model >= 68030)
          {
-            char valbuf[8];
-            if (opt_cpu_model > 68040)
-               snprintf(valbuf, sizeof(valbuf), "%d", 68040);
-            else
-               snprintf(valbuf, sizeof(valbuf), "%d", opt_cpu_model);
-
             strcat(uae_config, "mmu_model=");
-            strcat(uae_config, valbuf);
+            strcat(uae_config, var.value);
             strcat(uae_config, "\n");
 
             strcat(uae_config, "cpu_24bit_addressing=false\n");
          }
       }
+
+      if (libretro_runloop_active)
+      {
+         if (!strstr(var.value, "auto"))
+            changed_prefs.cpu_model = override_opt.cpu_model;
+         else
+            changed_prefs.cpu_model = preset_opt.cpu_model;
+
+         if (changed_prefs.cpu_model >= 68030)
+         {
+            changed_prefs.mmu_model = changed_prefs.cpu_model;
+            changed_prefs.address_space_24 = false;
+         }
+         else
+         {
+            changed_prefs.mmu_model = 0;
+            changed_prefs.address_space_24 = (changed_prefs.cpu_model < 68020) ? true : false;
+         }
+      }
    }
 
-   var.key = "puae_fpu_model";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("fpu_model")
    {
-      opt_fpu_model = -1;
-      if (!strcmp(var.value, "cpu") && opt_cpu_model > 0)
-         opt_fpu_model = opt_cpu_model;
+      override_opt.fpu_model = -1;
+      if (!strcmp(var.value, "cpu") && override_opt.cpu_model >= 68030)
+         override_opt.fpu_model = override_opt.cpu_model;
       else if (!strstr(var.value, "auto"))
-         opt_fpu_model = atoi(var.value);
+         override_opt.fpu_model = atoi(var.value);
 
-      if (opt_fpu_model && opt_cpu_model > 68030)
-         opt_fpu_model = opt_cpu_model;
-      else if ((opt_fpu_model != 0 && opt_fpu_model != 68881) && opt_cpu_model > 68020)
-         opt_fpu_model = 68882;
+      /* CPU internal FPU force */
+      if (override_opt.fpu_model && override_opt.cpu_model >= 68040)
+         override_opt.fpu_model = override_opt.cpu_model;
+      else if (override_opt.fpu_model && override_opt.fpu_model != 68881 && override_opt.cpu_model == 68030)
+         override_opt.fpu_model = 68882;
 
-      if (opt_fpu_model > -1)
+      if (override_opt.fpu_model > -1)
       {
          char valbuf[8];
-         snprintf(valbuf, sizeof(valbuf), "%d", opt_fpu_model);
+         snprintf(valbuf, sizeof(valbuf), "%d", override_opt.fpu_model);
 
          strcat(uae_config, "fpu_model=");
          strcat(uae_config, valbuf);
          strcat(uae_config, "\n");
       }
+
+      if (libretro_runloop_active)
+      {
+         if (!strstr(var.value, "auto"))
+            changed_prefs.fpu_model = override_opt.fpu_model;
+         else
+            changed_prefs.fpu_model = preset_opt.fpu_model;
+      }
    }
 
-   var.key = "puae_cpu_compatibility";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("cpu_compatibility")
    {
       if (!strcmp(var.value, "normal"))
       {
@@ -3837,9 +3956,7 @@ static void update_variables(void)
       }
    }
 
-   var.key = "puae_cpu_throttle";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("cpu_throttle")
    {
       strcat(uae_config, "cpu_throttle=");
       strcat(uae_config, var.value);
@@ -3849,9 +3966,7 @@ static void update_variables(void)
          changed_prefs.m68k_speed_throttle = atof(var.value);
    }
 
-   var.key = "puae_cpu_multiplier";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("cpu_multiplier")
    {
       strcat(uae_config, "cpu_multiplier=");
       strcat(uae_config, var.value);
@@ -3861,9 +3976,7 @@ static void update_variables(void)
          changed_prefs.cpu_clock_multiplier = atoi(var.value) * 256;
    }
 
-   var.key = "puae_sound_stereo_separation";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("sound_stereo_separation")
    {
       unsigned char val = atoi(var.value) / 10;
       char valbuf[4];
@@ -3877,9 +3990,7 @@ static void update_variables(void)
          changed_prefs.sound_stereo_separation = val;
    }
 
-   var.key = "puae_sound_interpol";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("sound_interpol")
    {
       strcat(uae_config, "sound_interpol=");
       strcat(uae_config, var.value);
@@ -3895,9 +4006,7 @@ static void update_variables(void)
       }
    }
 
-   var.key = "puae_sound_filter";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("sound_filter")
    {
       strcat(uae_config, "sound_filter=");
       strcat(uae_config, var.value);
@@ -3911,9 +4020,7 @@ static void update_variables(void)
       }
    }
 
-   var.key = "puae_sound_filter_type";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("sound_filter_type")
    {
       if (strcmp(var.value, "auto"))
       {
@@ -3931,9 +4038,7 @@ static void update_variables(void)
       }
    }
 
-   var.key = "puae_sound_volume_cd";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("sound_volume_cd")
    {
       /* 100 is mute, 0 is max */
       int val = 100 - atoi(var.value);
@@ -3948,9 +4053,7 @@ static void update_variables(void)
          changed_prefs.sound_volume_cd = val;
    }
 
-   var.key = "puae_autoloadfastforward";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("autoloadfastforward")
    {
       if      (!strcmp(var.value, "disabled")) opt_autoloadfastforward = 0;
       else if (!strcmp(var.value, "fd"))       opt_autoloadfastforward = AUTOLOADFASTFORWARD_FD;
@@ -3961,9 +4064,7 @@ static void update_variables(void)
                                                                          AUTOLOADFASTFORWARD_CD;
    }
 
-   var.key = "puae_cd_speed";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("cd_speed")
    {
       strcat(uae_config, "cd_speed=");
       strcat(uae_config, var.value);
@@ -3973,9 +4074,7 @@ static void update_variables(void)
          changed_prefs.cd_speed = atoi(var.value);
    }
 
-   var.key = "puae_floppy_speed";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("floppy_speed")
    {
       strcat(uae_config, "floppy_speed=");
       strcat(uae_config, var.value);
@@ -3985,17 +4084,13 @@ static void update_variables(void)
          changed_prefs.floppy_speed = atoi(var.value);
    }
 
-   var.key = "puae_floppy_multidrive";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("floppy_multidrive")
    {
       if (!strcmp(var.value, "disabled")) opt_floppy_multidrive = false;
       else                                opt_floppy_multidrive = true;
    }
 
-   var.key = "puae_floppy_write_protection";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("floppy_write_protection")
    {
       int val = 0;
 
@@ -4026,9 +4121,7 @@ static void update_variables(void)
       }
    }
 
-   var.key = "puae_floppy_write_redirect";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("floppy_write_redirect")
    {
       bool opt_floppy_write_redirect_prev = opt_floppy_write_redirect;
 
@@ -4064,9 +4157,7 @@ static void update_variables(void)
       }
    }
 
-   var.key = "puae_floppy_sound";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("floppy_sound")
    {
       char val[4];
       strlcpy(val, var.value, sizeof(val));
@@ -4087,17 +4178,13 @@ static void update_variables(void)
             changed_prefs.dfxclickvolume_disk[i] = atoi(val);
    }
 
-   var.key = "puae_floppy_sound_empty_mute";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("floppy_sound_empty_mute")
    {
       if (!strcmp(var.value, "disabled")) opt_floppy_sound_empty_mute = false;
       else                                opt_floppy_sound_empty_mute = true;
    }
 
-   var.key = "puae_floppy_sound_type";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("floppy_sound_type")
    {
       if (!strcmp(var.value, "internal"))
       {
@@ -4144,9 +4231,7 @@ static void update_variables(void)
       }
    }
 
-   var.key = "puae_mouse_speed";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("mouse_speed")
    {
       strcat(uae_config, "input.mouse_speed=");
       strcat(uae_config, var.value);
@@ -4160,14 +4245,12 @@ static void update_variables(void)
       }
    }
 
-   var.key = "puae_immediate_blits";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("immediate_blits")
    {
       if (!strcmp(var.value, "false"))
       {
          strcat(uae_config, "immediate_blits=false\n");
-         strcat(uae_config, "waiting_blits=false\n");
+         strcat(uae_config, "waiting_blits=disabled\n");
       }
       else if (!strcmp(var.value, "immediate"))
       {
@@ -4200,9 +4283,7 @@ static void update_variables(void)
       }
    }
 
-   var.key = "puae_collision_level";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("collision_level")
    {
       strcat(uae_config, "collision_level=");
       strcat(uae_config, var.value);
@@ -4217,9 +4298,7 @@ static void update_variables(void)
       }
    }
 
-   var.key = "puae_gfx_framerate";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("gfx_framerate")
    {
       int val = 0;
       if      (!strcmp(var.value, "disabled")) val = 1;
@@ -4239,9 +4318,7 @@ static void update_variables(void)
          changed_prefs.gfx_framerate = val;
    }
 
-   var.key = "puae_gfx_colors";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("gfx_colors")
    {
       /* Only allow screenmode change after restart */
       if (!pix_bytes_initialized)
@@ -4251,9 +4328,7 @@ static void update_variables(void)
       }
    }
 
-   var.key = "puae_gfx_gamma";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("gfx_gamma")
    {
       int val = atoi(var.value);
 
@@ -4273,9 +4348,7 @@ static void update_variables(void)
       }
    }
 
-   var.key = "puae_gfx_flickerfixer";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("gfx_flickerfixer")
    {
       if (!strcmp(var.value, "disabled"))
          strcat(uae_config, "gfx_flickerfixer=false\n");
@@ -4293,9 +4366,7 @@ static void update_variables(void)
       }
    }
 
-   var.key = "puae_crop";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("crop")
    {
       if      (!strcmp(var.value, "disabled")) crop_id = CROP_NONE;
       else if (!strcmp(var.value, "minimum"))  crop_id = CROP_MINIMUM;
@@ -4310,9 +4381,7 @@ static void update_variables(void)
       opt_crop_id = crop_id;
    }
 
-   var.key = "puae_crop_mode";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("crop_mode")
    {
       if      (!strcmp(var.value, "both"))       crop_mode_id = CROP_MODE_BOTH;
       else if (!strcmp(var.value, "vertical"))   crop_mode_id = CROP_MODE_VERTICAL;
@@ -4323,17 +4392,13 @@ static void update_variables(void)
       else if (!strcmp(var.value, "5:4"))        crop_mode_id = CROP_MODE_5_4;
    }
 
-   var.key = "puae_crop_delay";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("crop_delay")
    {
       if (!strcmp(var.value, "disabled")) crop_delay = false;
       else                                crop_delay = true;
    }
 
-   var.key = "puae_vertical_pos";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("vertical_pos")
    {
       opt_vertical_offset = 0;
       if (!strcmp(var.value, "auto"))
@@ -4347,9 +4412,7 @@ static void update_variables(void)
       }
    }
 
-   var.key = "puae_horizontal_pos";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("horizontal_pos")
    {
       opt_horizontal_offset = 0;
       if (!strcmp(var.value, "auto"))
@@ -4363,26 +4426,20 @@ static void update_variables(void)
       }
    }
 
-   var.key = "puae_use_whdload";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("use_whdload")
    {
       if      (!strcmp(var.value, "disabled")) opt_use_whdload = 0;
       else if (!strcmp(var.value, "files"))    opt_use_whdload = 1;
       else if (!strcmp(var.value, "hdfs"))     opt_use_whdload = 2;
    }
 
-   var.key = "puae_use_whdload_theme";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("use_whdload_theme")
    {
       if      (!strcmp(var.value, "default"))  opt_use_whdload_theme = 0;
       else if (!strcmp(var.value, "native"))   opt_use_whdload_theme = 1;
    }
 
-   var.key = "puae_use_whdload_prefs";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("use_whdload_prefs")
    {
       if      (!strcmp(var.value, "disabled")) opt_use_whdload_prefs = 0;
       else if (!strcmp(var.value, "config"))   opt_use_whdload_prefs = 1;
@@ -4390,33 +4447,31 @@ static void update_variables(void)
       else if (!strcmp(var.value, "both"))     opt_use_whdload_prefs = 3;
    }
 
-   var.key = "puae_use_whdload_nowritecache";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("use_whdload_buttonwait")
+   {
+      if (!strcmp(var.value, "disabled")) opt_use_whdload_buttonwait = false;
+      else                                opt_use_whdload_buttonwait = true;
+   }
+
+   GET_VAR("use_whdload_nowritecache")
    {
       if (!strcmp(var.value, "disabled")) opt_use_whdload_nowritecache = false;
       else                                opt_use_whdload_nowritecache = true;
    }
 
-   var.key = "puae_cd_startup_delayed_insert";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("cd_startup_delayed_insert")
    {
       if (!strcmp(var.value, "disabled")) opt_cd_startup_delayed_insert = false;
       else                                opt_cd_startup_delayed_insert = true;
    }
 
-   var.key = "puae_shared_nvram";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("shared_nvram")
    {
       if (!strcmp(var.value, "disabled")) opt_shared_nvram = false;
       else                                opt_shared_nvram = true;
    }
 
-   var.key = "puae_use_boot_hd";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("use_boot_hd")
    {
       if      (!strcmp(var.value, "disabled")) opt_use_boot_hd = 0;
       else if (!strcmp(var.value, "files"))    opt_use_boot_hd = 1;
@@ -4428,9 +4483,7 @@ static void update_variables(void)
       else if (!strcmp(var.value, "hdf512"))   opt_use_boot_hd = 7;
    }
 
-   var.key = "puae_joyport_pointer_color";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("joyport_pointer_color")
    {
       if      (!strcmp(var.value, "disabled")) opt_joyport_pointer_color = -1;
       else if (!strcmp(var.value, "black"))    opt_joyport_pointer_color = 0;
@@ -4443,9 +4496,7 @@ static void update_variables(void)
       else if (!strcmp(var.value, "purple"))   opt_joyport_pointer_color = 7;
    }
 
-   var.key = "puae_analogmouse";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("analogmouse")
    {
       if      (!strcmp(var.value, "disabled")) opt_analogmouse = 0;
       else if (!strcmp(var.value, "left"))     opt_analogmouse = 1;
@@ -4453,94 +4504,70 @@ static void update_variables(void)
       else if (!strcmp(var.value, "both"))     opt_analogmouse = 3;
    }
 
-   var.key = "puae_analogmouse_deadzone";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("analogmouse_deadzone")
    {
       opt_analogmouse_deadzone = atoi(var.value);
    }
 
-   var.key = "puae_analogmouse_speed";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("analogmouse_speed")
    {
       opt_analogmouse_speed_left = atof(var.value);
    }
 
-   var.key = "puae_analogmouse_speed_right";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("analogmouse_speed_right")
    {
       opt_analogmouse_speed_right = atof(var.value);
    }
 
-   var.key = "puae_dpadmouse_speed";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("dpadmouse_speed")
    {
       opt_dpadmouse_speed = atoi(var.value);
    }
 
-   var.key = "puae_physicalmouse";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("physicalmouse")
    {
       if      (!strcmp(var.value, "disabled")) opt_physicalmouse = 0;
       else if (!strcmp(var.value, "enabled"))  opt_physicalmouse = 1;
       else if (!strcmp(var.value, "double"))   opt_physicalmouse = 2;
    }
 
-   var.key = "puae_keyrah_keypad_mappings";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("keyrah_keypad_mappings")
    {
       if (!strcmp(var.value, "disabled")) opt_keyrah_keypad = false;
       else                                opt_keyrah_keypad = true;
    }
 
-   var.key = "puae_physical_keyboard_pass_through";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("physical_keyboard_pass_through")
    {
       if (!strcmp(var.value, "disabled")) opt_keyboard_pass_through = false;
       else                                opt_keyboard_pass_through = true;
    }
 
-   var.key = "puae_model_options_display";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("model_options_display")
    {
       if (!strcmp(var.value, "disabled")) opt_model_options_display = 0;
       else                                opt_model_options_display = 1;
    }
 
-   var.key = "puae_mapping_options_display";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("mapping_options_display")
    {
       if (!strcmp(var.value, "disabled")) opt_mapping_options_display = 0;
       else                                opt_mapping_options_display = 1;
    }
 
-   var.key = "puae_video_options_display";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("video_options_display")
    {
       if (!strcmp(var.value, "disabled")) opt_video_options_display = 0;
       else                                opt_video_options_display = 1;
    }
 
-   var.key = "puae_audio_options_display";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("audio_options_display")
    {
       if (!strcmp(var.value, "disabled")) opt_audio_options_display = 0;
       else                                opt_audio_options_display = 1;
    }
 
-   var.key = "puae_joyport";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("joyport")
    {
       if (!mousemode_locked)
       {
@@ -4549,16 +4576,12 @@ static void update_variables(void)
       }
    }
 
-   var.key = "puae_joyport_order";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("joyport_order")
    {
       snprintf(opt_joyport_order, sizeof(opt_joyport_order), "%s", var.value);
    }
 
-   var.key = "puae_retropad_options";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("retropad_options")
    {
       if      (!strcmp(var.value, "disabled"))    opt_retropad_options = RETROPAD_OPTIONS_DISABLED;
       else if (!strcmp(var.value, "rotate"))      opt_retropad_options = RETROPAD_OPTIONS_ROTATE;
@@ -4566,9 +4589,7 @@ static void update_variables(void)
       else if (!strcmp(var.value, "rotate_jump")) opt_retropad_options = RETROPAD_OPTIONS_ROTATE_JUMP;
    }
 
-   var.key = "puae_cd32pad_options";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("cd32pad_options")
    {
       if      (!strcmp(var.value, "disabled"))    opt_cd32pad_options = RETROPAD_OPTIONS_DISABLED;
       else if (!strcmp(var.value, "rotate"))      opt_cd32pad_options = RETROPAD_OPTIONS_ROTATE;
@@ -4576,9 +4597,7 @@ static void update_variables(void)
       else if (!strcmp(var.value, "rotate_jump")) opt_cd32pad_options = RETROPAD_OPTIONS_ROTATE_JUMP;
    }
 
-   var.key = "puae_turbo_fire";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("turbo_fire")
    {
       if (!turbo_fire_locked)
       {
@@ -4587,9 +4606,7 @@ static void update_variables(void)
       }
    }
 
-   var.key = "puae_turbo_fire_button";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("turbo_fire_button")
    {
       if      (!strcmp(var.value, "B"))  turbo_fire_button = RETRO_DEVICE_ID_JOYPAD_B;
       else if (!strcmp(var.value, "A"))  turbo_fire_button = RETRO_DEVICE_ID_JOYPAD_A;
@@ -4601,235 +4618,169 @@ static void update_variables(void)
       else if (!strcmp(var.value, "R2")) turbo_fire_button = RETRO_DEVICE_ID_JOYPAD_R2;
    }
 
-   var.key = "puae_turbo_pulse";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("turbo_pulse")
    {
       turbo_pulse = atoi(var.value);
    }
 
    /* Mapper */
-   var.key = "puae_mapper_up";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("mapper_up")
    {
       mapper_keys[RETRO_DEVICE_ID_JOYPAD_UP] = retro_keymap_id(var.value);
    }
 
-   var.key = "puae_mapper_down";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("mapper_down")
    {
       mapper_keys[RETRO_DEVICE_ID_JOYPAD_DOWN] = retro_keymap_id(var.value);
    }
 
-   var.key = "puae_mapper_left";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("mapper_left")
    {
       mapper_keys[RETRO_DEVICE_ID_JOYPAD_LEFT] = retro_keymap_id(var.value);
    }
 
-   var.key = "puae_mapper_right";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("mapper_right")
    {
       mapper_keys[RETRO_DEVICE_ID_JOYPAD_RIGHT] = retro_keymap_id(var.value);
    }
 
-   var.key = "puae_mapper_select";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("mapper_select")
    {
       mapper_keys[RETRO_DEVICE_ID_JOYPAD_SELECT] = retro_keymap_id(var.value);
    }
 
-   var.key = "puae_mapper_start";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("mapper_start")
    {
       mapper_keys[RETRO_DEVICE_ID_JOYPAD_START] = retro_keymap_id(var.value);
    }
 
-   var.key = "puae_mapper_b";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("mapper_b")
    {
       mapper_keys[RETRO_DEVICE_ID_JOYPAD_B] = retro_keymap_id(var.value);
    }
 
-   var.key = "puae_mapper_a";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("mapper_a")
    {
       mapper_keys[RETRO_DEVICE_ID_JOYPAD_A] = retro_keymap_id(var.value);
    }
 
-   var.key = "puae_mapper_y";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("mapper_y")
    {
       mapper_keys[RETRO_DEVICE_ID_JOYPAD_Y] = retro_keymap_id(var.value);
    }
 
-   var.key = "puae_mapper_x";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("mapper_x")
    {
       mapper_keys[RETRO_DEVICE_ID_JOYPAD_X] = retro_keymap_id(var.value);
    }
 
-   var.key = "puae_mapper_l";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("mapper_l")
    {
       mapper_keys[RETRO_DEVICE_ID_JOYPAD_L] = retro_keymap_id(var.value);
    }
 
-   var.key = "puae_mapper_r";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("mapper_r")
    {
       mapper_keys[RETRO_DEVICE_ID_JOYPAD_R] = retro_keymap_id(var.value);
    }
 
-   var.key = "puae_mapper_l2";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("mapper_l2")
    {
       mapper_keys[RETRO_DEVICE_ID_JOYPAD_L2] = retro_keymap_id(var.value);
    }
 
-   var.key = "puae_mapper_r2";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("mapper_r2")
    {
       mapper_keys[RETRO_DEVICE_ID_JOYPAD_R2] = retro_keymap_id(var.value);
    }
 
-   var.key = "puae_mapper_l3";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("mapper_l3")
    {
       mapper_keys[RETRO_DEVICE_ID_JOYPAD_L3] = retro_keymap_id(var.value);
    }
 
-   var.key = "puae_mapper_r3";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("mapper_r3")
    {
       mapper_keys[RETRO_DEVICE_ID_JOYPAD_R3] = retro_keymap_id(var.value);
    }
 
-   var.key = "puae_mapper_lr";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("mapper_lr")
    {
       mapper_keys[RETRO_DEVICE_ID_JOYPAD_LR] = retro_keymap_id(var.value);
    }
 
-   var.key = "puae_mapper_ll";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("mapper_ll")
    {
       mapper_keys[RETRO_DEVICE_ID_JOYPAD_LL] = retro_keymap_id(var.value);
    }
 
-   var.key = "puae_mapper_ld";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("mapper_ld")
    {
       mapper_keys[RETRO_DEVICE_ID_JOYPAD_LD] = retro_keymap_id(var.value);
    }
 
-   var.key = "puae_mapper_lu";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("mapper_lu")
    {
       mapper_keys[RETRO_DEVICE_ID_JOYPAD_LU] = retro_keymap_id(var.value);
    }
 
-   var.key = "puae_mapper_rr";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("mapper_rr")
    {
       mapper_keys[RETRO_DEVICE_ID_JOYPAD_RR] = retro_keymap_id(var.value);
    }
 
-   var.key = "puae_mapper_rl";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("mapper_rl")
    {
       mapper_keys[RETRO_DEVICE_ID_JOYPAD_RL] = retro_keymap_id(var.value);
    }
 
-   var.key = "puae_mapper_rd";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("mapper_rd")
    {
       mapper_keys[RETRO_DEVICE_ID_JOYPAD_RD] = retro_keymap_id(var.value);
    }
 
-   var.key = "puae_mapper_ru";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("mapper_ru")
    {
       mapper_keys[RETRO_DEVICE_ID_JOYPAD_RU] = retro_keymap_id(var.value);
    }
 
    /* Mapper hotkeys */
-   var.key = "puae_mapper_vkbd";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("mapper_vkbd")
    {
       mapper_keys[RETRO_MAPPER_VKBD] = retro_keymap_id(var.value);
    }
 
-   var.key = "puae_mapper_statusbar";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("mapper_statusbar")
    {
       mapper_keys[RETRO_MAPPER_STATUSBAR] = retro_keymap_id(var.value);
    }
 
-   var.key = "puae_mapper_mouse_toggle";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("mapper_mouse_toggle")
    {
       mapper_keys[RETRO_MAPPER_JOYMOUSE] = retro_keymap_id(var.value);
    }
 
-   var.key = "puae_mapper_reset";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("mapper_reset")
    {
       mapper_keys[RETRO_MAPPER_RESET] = retro_keymap_id(var.value);
    }
 
-   var.key = "puae_mapper_aspect_ratio_toggle";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("mapper_aspect_ratio_toggle")
    {
       mapper_keys[RETRO_MAPPER_ASPECT_RATIO] = retro_keymap_id(var.value);
    }
 
-   var.key = "puae_mapper_crop_toggle";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("mapper_crop_toggle")
    {
       mapper_keys[RETRO_MAPPER_CROP] = retro_keymap_id(var.value);
    }
 
-   var.key = "puae_mapper_turbo_fire_toggle";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("mapper_turbo_fire_toggle")
    {
       mapper_keys[RETRO_MAPPER_TURBO_FIRE] = retro_keymap_id(var.value);
    }
 
-   var.key = "puae_mapper_save_disk_toggle";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   GET_VAR("mapper_save_disk_toggle")
    {
       mapper_keys[RETRO_MAPPER_SAVE_DISK] = retro_keymap_id(var.value);
    }
@@ -4838,159 +4789,51 @@ static void update_variables(void)
    switch (video_config)
    {
       case PUAE_VIDEO_PAL_LO:
-         defaultw = PUAE_VIDEO_WIDTH / 2;
-         defaulth = PUAE_VIDEO_HEIGHT_PAL / 2;
+      case PUAE_VIDEO_NTSC_LO:
          strcat(uae_config, "gfx_resolution=lores\n");
          strcat(uae_config, "gfx_linemode=none\n");
          break;
       case PUAE_VIDEO_PAL_HI:
-         defaultw = PUAE_VIDEO_WIDTH;
-         defaulth = PUAE_VIDEO_HEIGHT_PAL / 2;
+      case PUAE_VIDEO_NTSC_HI:
          strcat(uae_config, "gfx_resolution=hires\n");
          strcat(uae_config, "gfx_linemode=none\n");
          break;
       case PUAE_VIDEO_PAL_HI_DL:
-         defaultw = PUAE_VIDEO_WIDTH;
-         defaulth = PUAE_VIDEO_HEIGHT_PAL;
+      case PUAE_VIDEO_NTSC_HI_DL:
          strcat(uae_config, "gfx_resolution=hires\n");
          strcat(uae_config, "gfx_linemode=double\n");
          break;
       case PUAE_VIDEO_PAL_SUHI:
-         defaultw = PUAE_VIDEO_WIDTH * 2;
-         defaulth = PUAE_VIDEO_HEIGHT_PAL / 2;
+      case PUAE_VIDEO_NTSC_SUHI:
          strcat(uae_config, "gfx_resolution=superhires\n");
          strcat(uae_config, "gfx_linemode=none\n");
          break;
       case PUAE_VIDEO_PAL_SUHI_DL:
-         defaultw = PUAE_VIDEO_WIDTH * 2;
-         defaulth = PUAE_VIDEO_HEIGHT_PAL;
-         strcat(uae_config, "gfx_resolution=superhires\n");
-         strcat(uae_config, "gfx_linemode=double\n");
-         break;
-
-      case PUAE_VIDEO_NTSC_LO:
-         defaultw = PUAE_VIDEO_WIDTH / 2;
-         defaulth = PUAE_VIDEO_HEIGHT_NTSC / 2;
-         strcat(uae_config, "gfx_resolution=lores\n");
-         strcat(uae_config, "gfx_linemode=none\n");
-         break;
-      case PUAE_VIDEO_NTSC_HI:
-         defaultw = PUAE_VIDEO_WIDTH;
-         defaulth = PUAE_VIDEO_HEIGHT_NTSC / 2;
-         strcat(uae_config, "gfx_resolution=hires\n");
-         strcat(uae_config, "gfx_linemode=none\n");
-         break;
-      case PUAE_VIDEO_NTSC_HI_DL:
-         defaultw = PUAE_VIDEO_WIDTH;
-         defaulth = PUAE_VIDEO_HEIGHT_NTSC;
-         strcat(uae_config, "gfx_resolution=hires\n");
-         strcat(uae_config, "gfx_linemode=double\n");
-         break;
-      case PUAE_VIDEO_NTSC_SUHI:
-         defaultw = PUAE_VIDEO_WIDTH * 2;
-         defaulth = PUAE_VIDEO_HEIGHT_NTSC / 2;
-         strcat(uae_config, "gfx_resolution=superhires\n");
-         strcat(uae_config, "gfx_linemode=none\n");
-         break;
       case PUAE_VIDEO_NTSC_SUHI_DL:
-         defaultw = PUAE_VIDEO_WIDTH * 2;
-         defaulth = PUAE_VIDEO_HEIGHT_NTSC;
          strcat(uae_config, "gfx_resolution=superhires\n");
          strcat(uae_config, "gfx_linemode=double\n");
          break;
    }
+
+   if (!libretro_runloop_active || request_init_custom_timer)
+      retro_set_geometry(video_config, true);
+   else
+      retro_set_geometry(video_config, false);
 
    /* Always update av_info geometry */
    request_update_av_info = true;
 
+   /* Only fix invalid combinations when running */
+   if (libretro_runloop_active)
+      fixup_prefs(&changed_prefs, false);
+
    /* Always trigger changed prefs */
+   target_fixup_options(&changed_prefs);
    set_config_changed();
    device_check_config();
 
+   /* Hide/show core options */
    retro_set_options_display();
-
-   /* Handle migration compatibility with old "zoom" */
-   bool request_update_variables      = false;
-   int legacy_zoom                    = -1;
-   int legacy_zoom_crop               = -1;
-   int legacy_zoom_toggle             = -1;
-   char legacy_zoom_string[20]        = {0};
-   char legacy_zoom_crop_string[20]   = {0};
-   char legacy_zoom_toggle_string[20] = {0};
-
-   var.key = "puae_zoom_mode";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
-   {
-      if      (!strcmp(var.value, "disabled")) legacy_zoom = CROP_NONE;
-      else if (!strcmp(var.value, "minimum"))  legacy_zoom = CROP_MINIMUM;
-      else if (!strcmp(var.value, "smaller"))  legacy_zoom = CROP_SMALLER;
-      else if (!strcmp(var.value, "small"))    legacy_zoom = CROP_SMALL;
-      else if (!strcmp(var.value, "medium"))   legacy_zoom = CROP_MEDIUM;
-      else if (!strcmp(var.value, "large"))    legacy_zoom = CROP_LARGE;
-      else if (!strcmp(var.value, "larger"))   legacy_zoom = CROP_LARGER;
-      else if (!strcmp(var.value, "maximum"))  legacy_zoom = CROP_MAXIMUM;
-      else if (!strcmp(var.value, "auto"))     legacy_zoom = CROP_AUTO;
-
-      strlcpy(legacy_zoom_string, var.value, sizeof(legacy_zoom_string));
-   }
-
-   var.key = "puae_zoom_mode_crop";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
-   {
-      if      (!strcmp(var.value, "both"))       legacy_zoom_crop = CROP_MODE_BOTH;
-      else if (!strcmp(var.value, "vertical"))   legacy_zoom_crop = CROP_MODE_VERTICAL;
-      else if (!strcmp(var.value, "horizontal")) legacy_zoom_crop = CROP_MODE_HORIZONTAL;
-      else if (!strcmp(var.value, "16:9"))       legacy_zoom_crop = CROP_MODE_16_9;
-      else if (!strcmp(var.value, "16:10"))      legacy_zoom_crop = CROP_MODE_16_10;
-      else if (!strcmp(var.value, "4:3"))        legacy_zoom_crop = CROP_MODE_4_3;
-      else if (!strcmp(var.value, "5:4"))        legacy_zoom_crop = CROP_MODE_5_4;
-
-      strlcpy(legacy_zoom_crop_string, var.value, sizeof(legacy_zoom_crop_string));
-   }
-
-   var.key = "puae_mapper_zoom_mode_toggle";
-   var.value = NULL;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
-   {
-      legacy_zoom_toggle = retro_keymap_id(var.value);
-      strlcpy(legacy_zoom_toggle_string, var.value, sizeof(legacy_zoom_toggle_string));
-   }
-
-   if (legacy_zoom > CROP_NONE)
-   {
-      log_cb(RETRO_LOG_INFO, "Migrating 'zoom_mode' to 'crop'..\n");
-      set_variable("puae_crop", legacy_zoom_string);
-      request_update_variables = true;
-   }
-
-   if (legacy_zoom_crop > 0)
-   {
-      log_cb(RETRO_LOG_INFO, "Migrating 'zoom_mode_crop' to 'crop_mode'..\n");
-      set_variable("puae_crop_mode", legacy_zoom_crop_string);
-      request_update_variables = true;
-   }
-
-   if (legacy_zoom_toggle > 0)
-   {
-      log_cb(RETRO_LOG_INFO, "Migrating 'mapper_zoom_mode_toggle' to 'mapper_crop_toggle'..\n");
-      set_variable("puae_mapper_crop_toggle", legacy_zoom_toggle_string);
-      request_update_variables = true;
-   }
-
-   if (strcmp(legacy_zoom_string, "deprecated"))
-      set_variable("puae_zoom_mode", "deprecated");
-
-   if (strcmp(legacy_zoom_crop_string, "deprecated"))
-      set_variable("puae_zoom_mode_crop", "deprecated");
-
-   if (strcmp(legacy_zoom_toggle_string, "---"))
-      set_variable("puae_mapper_zoom_mode_toggle", "---");
-
-   updating_variables = false;
-   if (request_update_variables)
-      update_variables();
 }
 
 /*****************************************************************************/
@@ -5099,20 +4942,21 @@ bool retro_disk_set_image_index(unsigned index)
       if (index < dc->count && dc->files[index])
       {
          dc->index = index;
-         display_current_image(dc->labels[dc->index], false);
 
          switch (dc->types[dc->index])
          {
             case DC_IMAGE_TYPE_FLOPPY:
-               log_cb(RETRO_LOG_INFO, "Disk (%d) inserted in drive DF0: '%s'\n", dc->index+1, dc->files[dc->index]);
+               log_cb(RETRO_LOG_INFO, "Disk (%d) inserted in drive DF0: \"%s\".\n", dc->index + 1, dc->files[dc->index]);
                break;
             case DC_IMAGE_TYPE_CD:
-               log_cb(RETRO_LOG_INFO, "CD (%d) inserted in drive CD0: '%s'\n", dc->index+1, dc->files[dc->index]);
+               log_cb(RETRO_LOG_INFO, "CD (%d) inserted in drive CD0: \"%s\".\n", dc->index + 1, dc->files[dc->index]);
                break;
             default:
+               return true;
                break;
          }
 
+         display_current_image(dc->labels[dc->index], false);
          return true;
       }
    }
@@ -5263,12 +5107,6 @@ void retro_init(void)
    struct retro_core_options_update_display_callback update_display_callback = {retro_update_display};
    environ_cb(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_UPDATE_DISPLAY_CALLBACK, &update_display_callback);
 
-   /* Savestates
-    * > Considered incomplete because runahead cannot
-    *   be enabled until content is full loaded */
-   static uint64_t quirks = RETRO_SERIALIZATION_QUIRK_INCOMPLETE;
-   environ_cb(RETRO_ENVIRONMENT_SET_SERIALIZATION_QUIRKS, &quirks);
-
    /* > Ensure save state de-serialization file
     *   is closed/NULL
     *   (redundant safety check, possibly required
@@ -5291,22 +5129,24 @@ void retro_init(void)
    memset(retro_bmp, 0, sizeof(retro_bmp));
    init_output_audio_buffer(2048);
 
-   libretro_runloop_active = 0;
+   libretro_runloop_active = false;
    update_variables();
 }
 
 void retro_deinit(void)
 {
-   /* Clean the M3U storage */
+   leave_program();
+
+   /* Clean ZIP temp */
+   if (!string_is_empty(retro_temp_directory) && path_is_directory(retro_temp_directory))
+      remove_recurse(retro_temp_directory);
+
+   /* Clean Disc Control context */
    if (dc)
       dc_free(dc);
 
    /* Clean dynamic cartridge info */
    free_puae_carts();
-
-   /* Clean ZIP temp */
-   if (!string_is_empty(retro_temp_directory) && path_is_directory(retro_temp_directory))
-      remove_recurse(retro_temp_directory);
 
    /* Free buffers used by libretro-graph */
    libretro_graph_free();
@@ -5316,13 +5156,6 @@ void retro_deinit(void)
 
    /* 'Reset' troublesome static variables */
    pix_bytes_initialized = false;
-   cpu_cycle_exact_force = false;
-   automatic_sound_filter_type_update_timer = 0;
-   fake_ntsc = false;
-   real_ntsc = false;
-   forced_video = -1;
-   locked_video_horizontal = false;
-   opt_aspect_ratio_locked = false;
    libretro_supports_bitmasks = false;
    libretro_supports_ff_override = false;
    libretro_supports_option_categories = false;
@@ -5387,31 +5220,63 @@ void retro_get_system_info(struct retro_system_info *info)
    info->library_version  = PACKAGE_VERSION "" GIT_VERSION;
    info->need_fullpath    = true;
    info->block_extract    = true;
-   info->valid_extensions = "adf|adz|dms|fdi|raw|ipf|hdf|hdz|lha|slave|info|cue|ccd|nrg|mds|iso|chd|uae|m3u|zip|7z";
+   info->valid_extensions = "adf|adz|dms|fdi|raw|ipf|hdf|hdz|lha|slave|info|cue|ccd|nrg|mds|iso|chd|uae|m3u|zip|7z|/";
 }
 
 float retro_get_aspect_ratio(unsigned int width, unsigned int height, bool pixel_aspect)
 {
-   float ar  = 1;
-   float par = 1;
+   double ar  = 1;
+   double par = 1;
 
    if (video_config_geometry & PUAE_VIDEO_NTSC || video_config_aspect == PUAE_VIDEO_NTSC)
-      par = (float)44.0 / (float)52.0;
-   ar = ((float)width / (float)height) * par;
+      par = 28512.0f / 33173.0f; /* 43:50 */
+   else if (video_config_geometry & PUAE_VIDEO_PAL || video_config_aspect == PUAE_VIDEO_PAL)
+      par = 9600000.0f / 9221927.0f; /* 26:25 */
 
-   if (video_config_geometry & PUAE_VIDEO_DOUBLELINE)
+   if (video_config_aspect == PUAE_VIDEO_1x1 || video_productivity)
+      par = 1;
+
+   ar = ((double)width / (double)height) * par;
+
+   if (video_productivity)
+   {
+      if (retro_av_info_is_lace && !retro_doublescan)
+         ar *= 2.0f;
+
+      if (!retro_av_info_is_lace && !retro_doublescan && (video_config_geometry & PUAE_VIDEO_DOUBLELINE))
+         ar *= 2.0f;
+
+      if (retro_av_info_is_lace && retro_doublescan && (video_config_geometry & PUAE_VIDEO_QUADLINE))
+         ar *= 2.0f;
+
+      if (retro_doublescan || (retrow == PUAE_VIDEO_WIDTH_S72 || retrow == PUAE_VIDEO_WIDTH_S72 * 2))
+         ar *= 2.0f;
+
+      if (video_config_geometry & PUAE_VIDEO_HIRES)
+         ar /= 2.0f;
+      else if (video_config_geometry & PUAE_VIDEO_SUPERHIRES)
+         ar /= 4.0f;
+
+      /* Set productivity modes to 4:3 if not forced to 1:1 */
+      if (video_config_aspect != PUAE_VIDEO_1x1)
+      {
+         par = (4.0f / 3.0f);
+         ar  = par;
+      }
+   }
+   else if (video_config_geometry & PUAE_VIDEO_DOUBLELINE)
    {
       if (video_config_geometry & PUAE_VIDEO_HIRES)
          ;
       else if (video_config_geometry & PUAE_VIDEO_SUPERHIRES)
-         ar /= 2;
+         ar /= 2.0f;
    }
    else
    {
       if (video_config_geometry & PUAE_VIDEO_HIRES)
-         ar /= 2;
+         ar /= 2.0f;
       else if (video_config_geometry & PUAE_VIDEO_SUPERHIRES)
-         ar /= 4;
+         ar /= 4.0f;
    }
 
    if (pixel_aspect)
@@ -5429,10 +5294,14 @@ static float retro_default_refresh(void)
 
 void retro_get_system_av_info(struct retro_system_av_info *info)
 {
+   /* Prevent video reinits on geometry increase */
+   if (opt_video_resolution_auto == RESOLUTION_AUTO_SUPERHIRES)
+      retrow_max = EMULATOR_DEF_WIDTH * 2;
+
    info->geometry.base_width   = retrow;
    info->geometry.base_height  = retroh;
    info->geometry.max_width    = retrow_max;
-   info->geometry.max_height   = EMULATOR_DEF_HEIGHT;
+   info->geometry.max_height   = retroh_max;
    info->geometry.aspect_ratio = retro_get_aspect_ratio(retrow, retroh, false);
 
    if (!retro_refresh)
@@ -5496,7 +5365,7 @@ static void retro_config_force_region(void)
    /* If region was specified in the path */
    if (strstr(full_path, "NTSC") || strstr(full_path, "(USA)"))
    {
-      log_cb(RETRO_LOG_INFO, "Forcing NTSC mode\n");
+      log_cb(RETRO_LOG_INFO, "Forcing NTSC mode.\n");
       retro_config_append("ntsc=true\n");
       real_ntsc = true;
       forced_video = RETRO_REGION_NTSC;
@@ -5507,7 +5376,7 @@ static void retro_config_force_region(void)
          || strstr(full_path, "(Finland)") || strstr(full_path, "(Denmark)")
          || strstr(full_path, "(Sweden)"))
    {
-      log_cb(RETRO_LOG_INFO, "Forcing PAL mode\n");
+      log_cb(RETRO_LOG_INFO, "Forcing PAL mode.\n");
       retro_config_append("ntsc=false\n");
       real_ntsc = false;
       forced_video = RETRO_REGION_PAL;
@@ -5532,8 +5401,8 @@ static void retro_config_boot_hd(void)
     * therefore use 'BootHD:' as volume name */
    if (dc_get_image_type(full_path) == DC_IMAGE_TYPE_WHDLOAD ||
        dc_get_image_type(full_path) == DC_IMAGE_TYPE_HD ||
-       m3u == DC_IMAGE_TYPE_HD ||
-       m3u == DC_IMAGE_TYPE_WHDLOAD)
+       m3u & (1 << DC_IMAGE_TYPE_HD) ||
+       m3u & (1 << DC_IMAGE_TYPE_WHDLOAD))
       snprintf(volume, sizeof(volume), "%s", label);
 
    snprintf(boothd_size, sizeof(boothd_size), "%dM", 0);
@@ -5570,14 +5439,28 @@ static void retro_config_boot_hd(void)
       path_join(boothd_hdf, retro_save_directory, LIBRETRO_PUAE_PREFIX ".hdf");
       if (!path_is_valid(boothd_hdf))
       {
-         log_cb(RETRO_LOG_INFO, "Boot HD image file '%s' not found, attempting to create..\n", boothd_hdf);
+         log_cb(RETRO_LOG_INFO, "Boot HD image file \"%s\" not found, attempting to create...\n", boothd_hdf);
          if (make_hdf(boothd_hdf, boothd_size, label))
-            log_cb(RETRO_LOG_ERROR, "Unable to create Boot HD image: '%s'\n", boothd_hdf);
+            log_cb(RETRO_LOG_ERROR, "Unable to create Boot HD image: \"%s\"\n", boothd_hdf);
       }
       if (path_is_valid(boothd_hdf))
       {
-         tmp_str = string_replace_substring(boothd_hdf, "\\", strlen("\\"), "\\\\", strlen("\\\\"));
-         retro_config_append("hardfile2=rw,%s:\"%s\",32,1,2,512,0,,uae0\n", volume, tmp_str);
+         tmp_str = string_replace_substring(boothd_hdf, strlen(boothd_hdf), "\\", strlen("\\"), "\\\\", strlen("\\\\"));
+
+         /* Detect RDB */
+         bool hdf_rdb = is_hdf_rdb(tmp_str);
+
+         if (hdf_rdb)
+            retro_config_append("hardfile2=rw,%s:\"%s\",0,0,0,512,0,,uae0\n", volume, tmp_str);
+         else
+         {
+            /* Guesstimate surfaces */
+            unsigned surfaces = 1;
+            if ((fsize(tmp_str) / 1024) >= (1024 * 1024))
+               surfaces = 16;
+
+            retro_config_append("hardfile2=rw,%s:\"%s\",32,%d,2,512,0,,uae0\n", volume, tmp_str, surfaces);
+         }
       }
    }
    /* Directory mode */
@@ -5588,16 +5471,16 @@ static void retro_config_boot_hd(void)
 
       if (!path_is_directory(boothd_path))
       {
-         log_cb(RETRO_LOG_INFO, "Boot HD image directory '%s' not found, attempting to create..\n", boothd_path);
+         log_cb(RETRO_LOG_INFO, "Boot HD image directory \"%s\" not found, attempting to create...\n", boothd_path);
          path_mkdir(boothd_path);
       }
       if (path_is_directory(boothd_path))
       {
-         tmp_str = string_replace_substring(boothd_path, "\\", strlen("\\"), "\\\\", strlen("\\\\"));
+         tmp_str = string_replace_substring(boothd_path, strlen(boothd_path), "\\", strlen("\\"), "\\\\", strlen("\\\\"));
          retro_config_append("filesystem2=rw,%s:%s:\"%s\",0\n", volume, label, tmp_str);
       }
       else
-         log_cb(RETRO_LOG_ERROR, "Unable to create Boot HD directory: '%s'\n", boothd_path);
+         log_cb(RETRO_LOG_ERROR, "Unable to create Boot HD directory: \"%s\".\n", boothd_path);
    }
 
    if (tmp_str)
@@ -5611,7 +5494,7 @@ static void retro_config_kickstart(void)
    bool valid = false;
 
    /* Wrong place for logging model but still the best place */
-   log_cb(RETRO_LOG_INFO, "Model: '%s'\n", uae_preset);
+   log_cb(RETRO_LOG_INFO, "Model: \"%s\".\n", uae_preset);
 
    /* Forced Kickstart */
    if (strcmp(opt_kickstart, "auto"))
@@ -5666,20 +5549,26 @@ static void retro_config_kickstart(void)
       }
    }
 
+   /* Fallback to original filename */
+   if (!valid)
+      strlcpy(kickstart, uae_kickstart, sizeof(kickstart));
+
    /* Final append + logging */
    if (valid)
    {
-      log_cb(RETRO_LOG_INFO, "Kickstart: '%s'\n", path_basename(kickstart));
+      log_cb(RETRO_LOG_INFO, "Kickstart: \"%s\".\n", path_basename(kickstart));
       if (strcmp(opt_kickstart, "aros"))
          retro_config_append("kickstart_rom_file=%s\n", kickstart);
    }
    else
    {
-      log_cb(RETRO_LOG_ERROR, "Kickstart ROM '%s' not found!\n", uae_kickstart);
-      snprintf(retro_message_msg, sizeof(retro_message_msg),
-               "Kickstart ROM '%s' not found!", uae_kickstart);
+      log_cb(RETRO_LOG_ERROR, "Kickstart ROM \"%s\" not found!\n", path_basename(kickstart));
+      snprintf(retro_message_msg, sizeof(retro_message_msg), "Kickstart ROM '%s' not found!", path_basename(kickstart));
       retro_message = true;
    }
+
+   /* Replace full path for override */
+   strlcpy(uae_kickstart, kickstart, sizeof(uae_kickstart));
 
    /* Extended KS + NVRAM */
    if (!string_is_empty(uae_kickstart_ext))
@@ -5726,17 +5615,20 @@ static void retro_config_kickstart(void)
             }
          }
 
+         /* Fallback to original filename */
+         if (!valid)
+            strlcpy(kickstart_ext, uae_kickstart_ext, sizeof(kickstart_ext));
+
          /* Final append + logging */
          if (valid)
          {
-            log_cb(RETRO_LOG_INFO, "+Extended: '%s'\n", path_basename(kickstart_ext));
+            log_cb(RETRO_LOG_INFO, "+Extended: \"%s\"\n", path_basename(kickstart_ext));
             retro_config_append("kickstart_ext_rom_file=%s\n", kickstart_ext);
          }
          else
          {
-            log_cb(RETRO_LOG_ERROR, "Kickstart extended ROM '%s' not found!\n", uae_kickstart_ext);
-            snprintf(retro_message_msg, sizeof(retro_message_msg),
-                     "Kickstart extended ROM '%s' not found!", uae_kickstart_ext);
+            log_cb(RETRO_LOG_ERROR, "Kickstart extended ROM \"%s\" not found!\n", path_basename(kickstart_ext));
+            snprintf(retro_message_msg, sizeof(retro_message_msg), "Kickstart extended ROM \"%s\" not found!", path_basename(kickstart_ext));
             retro_message = true;
          }
       }
@@ -5761,7 +5653,7 @@ static void retro_config_kickstart(void)
          snprintf(flash_filename, sizeof(flash_filename), "%s.nvr", flash_filebase);
       }
       path_join(flash_filepath, retro_save_directory, flash_filename);
-      log_cb(RETRO_LOG_INFO, "NVRAM: '%s'\n", flash_filepath);
+      log_cb(RETRO_LOG_INFO, "NVRAM: \"%s\".\n", flash_filepath);
       retro_config_append("flash_file=%s\n", flash_filepath);
    }
 }
@@ -5770,6 +5662,7 @@ static void retro_config_harddrives(void)
 {
    char *tmp_str = NULL;
    int8_t i      = 0;
+   uint8_t unit  = 0;
 
    if (!dc->count)
       return;
@@ -5778,6 +5671,10 @@ static void retro_config_harddrives(void)
    {
       char tmp_str_name[RETRO_PATH_MAX];
       char tmp_str_path[RETRO_PATH_MAX];
+
+      if (     dc_get_image_type(dc->files[i]) == DC_IMAGE_TYPE_FLOPPY
+            || dc_get_image_type(dc->files[i]) == DC_IMAGE_TYPE_CD)
+         continue;
 
       tmp_str = utf8_to_local_string_alloc(dc->files[i]);
       snprintf(tmp_str_name, sizeof(tmp_str_name), "%s", path_basename(tmp_str));
@@ -5799,33 +5696,23 @@ static void retro_config_harddrives(void)
       }
 
 #ifdef WIN32
-      tmp_str = string_replace_substring(tmp_str, "\\", strlen("\\"), "\\\\", strlen("\\\\"));
+      tmp_str = string_replace_substring(tmp_str, strlen(tmp_str), "\\", strlen("\\"), "\\\\", strlen("\\\\"));
 #endif
 
       /* LHAs read-only */
       if (strendswith(dc->files[i], "lha"))
-         retro_config_append("filesystem2=ro,DH%d:%s:\"%s\",0\n", i, tmp_str_name, tmp_str);
+         retro_config_append("filesystem2=ro,DH%d:%s:\"%s\",0\n", unit, tmp_str_name, tmp_str);
       /* Directories writable */
       else if (path_is_directory(dc->files[i]) || strendswith(dc->files[i], "slave") || strendswith(dc->files[i], "info"))
-         retro_config_append("filesystem2=rw,DH%d:%s:\"%s\",0\n", i, tmp_str_name, tmp_str);
+         retro_config_append("filesystem2=rw,DH%d:%s:\"%s\",0\n", unit, tmp_str_name, tmp_str);
       /* Hardfiles */
       else if (dc_get_image_type(dc->files[i]) == DC_IMAGE_TYPE_HD)
       {
          /* Detect RDB */
-         bool hdf_rdb = false;
-         FILE *hdf_fp;
-         char filebuf[4];
-         if ((hdf_fp = fopen(tmp_str, "r")))
-         {
-            fgets(filebuf, sizeof(filebuf), hdf_fp);
-            fclose(hdf_fp);
-
-            if (!strcmp(filebuf, "RDS"))
-               hdf_rdb = true;
-         }
+         bool hdf_rdb = is_hdf_rdb(tmp_str);
 
          if (hdf_rdb)
-            retro_config_append("hardfile2=rw,DH%d:\"%s\",0,0,0,512,0,,uae0\n", i, tmp_str);
+            retro_config_append("hardfile2=rw,DH%d:\"%s\",0,0,0,512,0,,uae0\n", unit, tmp_str);
          else
          {
             /* Guesstimate surfaces */
@@ -5833,11 +5720,12 @@ static void retro_config_harddrives(void)
             if ((fsize(tmp_str) / 1024) >= (1024 * 1024))
                surfaces = 16;
 
-            retro_config_append("hardfile2=rw,DH%d:\"%s\",32,%d,2,512,0,,uae0\n", i, tmp_str, surfaces);
+            retro_config_append("hardfile2=rw,DH%d:\"%s\",32,%d,2,512,0,,uae0\n", unit, tmp_str, surfaces);
          }
       }
 
-      log_cb(RETRO_LOG_INFO, "HD (%d) inserted in drive DH%d: '%s'\n", i+1, i, dc->files[i]);
+      log_cb(RETRO_LOG_INFO, "HD (%d) inserted in drive DH%d: \"%s\".\n", unit + 1, unit, dc->files[i]);
+      unit++;
 
       if (tmp_str)
          free(tmp_str);
@@ -5939,11 +5827,11 @@ static void whdload_kscopy(bool legacy)
          /* Allow size exception */
          if (     ks_stat.st_size != ks_size[x]
                && ks_stat.st_size - key_extra != ks_size[x])
-            log_cb(RETRO_LOG_INFO, "WHDLoad not installing Kickstart '%s' due to incorrect size, %d != %d\n", path_basename(ks_src), ks_stat.st_size, ks_size[x]);
+            log_cb(RETRO_LOG_INFO, "WHDLoad not installing Kickstart \"%s\" due to incorrect size, %d != %d.\n", path_basename(ks_src), ks_stat.st_size, ks_size[x]);
          else if (fcopy(ks_src, ks_dst) < 0)
-            log_cb(RETRO_LOG_INFO, "WHDLoad failed to install '%s' to '%s'\n", path_basename(ks_src), ks_dst);
+            log_cb(RETRO_LOG_INFO, "WHDLoad failed to install \"%s\" to \"%s\".\n", path_basename(ks_src), ks_dst);
          else
-            log_cb(RETRO_LOG_INFO, "WHDLoad installed '%s' to '%s'\n", path_basename(ks_src), ks_dst);
+            log_cb(RETRO_LOG_INFO, "WHDLoad installed \"%s\" to \"%s\".\n", path_basename(ks_src), ks_dst);
       }
    }
 }
@@ -5965,9 +5853,9 @@ static void whdload_prefs_copy(void)
    if (!path_is_valid(dst) && path_is_valid(src))
    {
       if (fcopy(src, dst) < 0)
-         log_cb(RETRO_LOG_INFO, "WHDLoad failed to install '%s'\n", filename);
+         log_cb(RETRO_LOG_INFO, "WHDLoad failed to install \"%s\".\n", filename);
       else
-         log_cb(RETRO_LOG_INFO, "WHDLoad installed '%s'\n", filename);
+         log_cb(RETRO_LOG_INFO, "WHDLoad installed \"%s\".\n", filename);
    }
 
    /* WHDLoad.key only when not found */
@@ -5981,9 +5869,9 @@ static void whdload_prefs_copy(void)
    if (!path_is_valid(dst) && path_is_valid(src))
    {
       if (fcopy(src, dst) < 0)
-         log_cb(RETRO_LOG_INFO, "WHDLoad failed to install '%s'\n", filename);
+         log_cb(RETRO_LOG_INFO, "WHDLoad failed to install \"%s\".\n", filename);
       else
-         log_cb(RETRO_LOG_INFO, "WHDLoad installed '%s'\n", filename);
+         log_cb(RETRO_LOG_INFO, "WHDLoad installed \"%s\".\n", filename);
    }
 
    /* WHDLoad.prefs always */
@@ -6006,9 +5894,9 @@ static void whdload_prefs_copy(void)
       }
 
       if (fcopy(src, dst) < 0)
-         log_cb(RETRO_LOG_INFO, "WHDLoad failed to update '%s'\n", filename);
+         log_cb(RETRO_LOG_INFO, "WHDLoad failed to update \"%s\".\n", filename);
       else
-         log_cb(RETRO_LOG_INFO, "WHDLoad updated '%s'\n", filename);
+         log_cb(RETRO_LOG_INFO, "WHDLoad updated \"%s\".\n", filename);
    }
 }
 
@@ -6020,21 +5908,21 @@ static void whdload_quitkey(void)
          || string_is_empty(currprefs.mountconfig[0].ci.volname))
       return;
 
-   log_cb(RETRO_LOG_INFO, "WHDLoad QuitKey triggered..\n");
-   libretro_runloop_active = 0;
+   log_cb(RETRO_LOG_INFO, "WHDLoad QuitKey triggered...\n");
+   libretro_runloop_active = false;
 
-   retro_key_down(RETROK_KP_MINUS);
+   retro_key_down(RETROK_HASH);
    for (i = 0; i < 2; i++)
       m68k_go(1, 1);
 
-   retro_key_up(RETROK_KP_MINUS);
+   retro_key_up(RETROK_HASH);
    for (i = 0; i < retro_refresh * 2; i++)
       m68k_go(1, 1);
 
-   libretro_runloop_active = 1;
+   libretro_runloop_active = true;
 }
 
-static char* emu_config_string(char *mode, int config)
+static char* emu_config_string(const char *mode, int config)
 {
    if (!strcmp(mode, "model"))
    {
@@ -6087,7 +5975,7 @@ static char* emu_config_string(char *mode, int config)
    return "";
 }
 
-static int emu_config_int(char *model)
+static int emu_config_int(const char *model)
 {
    if      (!strcmp(model, "A500"))      return EMU_CONFIG_A500;
    else if (!strcmp(model, "A500OG"))    return EMU_CONFIG_A500OG;
@@ -6109,6 +5997,7 @@ static char* emu_config(int config)
 {
    char custom_config_path[RETRO_PATH_MAX] = {0};
    char custom_config_file[RETRO_PATH_MAX] = {0};
+   char temp[255];
 
    /* Reset Kickstart */
    uae_kickstart[0] = '\0';
@@ -6118,7 +6007,7 @@ static char* emu_config(int config)
    path_join(custom_config_path, retro_save_directory, custom_config_file);
    if (path_is_valid(custom_config_path))
    {
-      log_cb(RETRO_LOG_INFO, "Appending model preset: '%s'\n", custom_config_path);
+      log_cb(RETRO_LOG_INFO, "Appending model preset: \"%s\"...\n", custom_config_path);
 
       FILE *custom_config_fp;
       char filebuf[RETRO_PATH_MAX];
@@ -6147,172 +6036,204 @@ static char* emu_config(int config)
     * fastmem_size (default 0): 1 = 1.0MB, ...
     */
    uae_preset_config[0] = '\0';
+
+   preset_opt.cpu_model     = 68000;
+   preset_opt.fpu_model     = 0;
+   preset_opt.mmu_model     = 0;
+   preset_opt.chipmem_size  = 1;
+   preset_opt.bogomem_size  = 0;
+   preset_opt.fastmem_size  = 0;
+   preset_opt.z3mem_size    = 0;
+   preset_opt.chipset       = 0;
+   preset_opt.cs_compatible = CP_A500;
+   preset_opt.address_space_24 = 1;
+
    switch (config)
    {
+      default:
       case EMU_CONFIG_A500:
-         strcat(uae_preset_config,
-         "cpu_model=68000\n"
-         "chipset=ocs\n"
-         "chipset_compatible=A500\n"
-         "chipmem_size=1\n"
-         "bogomem_size=2\n"
-         "fastmem_size=0\n"
-         );
+         preset_opt.chipmem_size  = 1;
+         preset_opt.bogomem_size  = 2;
+         preset_opt.fastmem_size  = 0;
+         preset_opt.chipset       = 0;
+         preset_opt.cs_compatible = CP_A500;
          break;
 
       case EMU_CONFIG_A500OG:
-         strcat(uae_preset_config,
-         "cpu_model=68000\n"
-         "chipset=ocs\n"
-         "chipset_compatible=A500\n"
-         "chipmem_size=1\n"
-         "bogomem_size=0\n"
-         "fastmem_size=0\n"
-         );
+         preset_opt.chipmem_size  = 1;
+         preset_opt.bogomem_size  = 0;
+         preset_opt.fastmem_size  = 0;
+         preset_opt.chipset       = 0;
+         preset_opt.cs_compatible = CP_A500;
          break;
 
       case EMU_CONFIG_A500PLUS:
-         strcat(uae_preset_config,
-         "cpu_model=68000\n"
-         "chipset=ecs\n"
-         "chipset_compatible=A500+\n"
-         "chipmem_size=2\n"
-         "bogomem_size=0\n"
-         "fastmem_size=0\n"
-         );
+         preset_opt.chipmem_size  = 2;
+         preset_opt.bogomem_size  = 0;
+         preset_opt.fastmem_size  = 0;
+         preset_opt.chipset       = 3;
+         preset_opt.cs_compatible = CP_A500P;
          break;
 
       case EMU_CONFIG_A600:
-         strcat(uae_preset_config,
-         "cpu_model=68000\n"
-         "chipset=ecs\n"
-         "chipset_compatible=A600\n"
-         "chipmem_size=4\n"
-         "bogomem_size=0\n"
-         "fastmem_size=8\n"
-         );
+         preset_opt.chipmem_size  = 4;
+         preset_opt.bogomem_size  = 0;
+         preset_opt.fastmem_size  = 8;
+         preset_opt.chipset       = 3;
+         preset_opt.cs_compatible = CP_A600;
          break;
 
       case EMU_CONFIG_A1200:
-         strcat(uae_preset_config,
-         "cpu_model=68020\n"
-         "chipset=aga\n"
-         "chipset_compatible=A1200\n"
-         "chipmem_size=4\n"
-         "bogomem_size=0\n"
-         "fastmem_size=8\n"
-         );
+         preset_opt.cpu_model     = 68020;
+         preset_opt.chipmem_size  = 4;
+         preset_opt.bogomem_size  = 0;
+         preset_opt.fastmem_size  = 8;
+         preset_opt.chipset       = 4;
+         preset_opt.cs_compatible = CP_A1200;
          break;
 
       case EMU_CONFIG_A1200OG:
-         strcat(uae_preset_config,
-         "cpu_model=68020\n"
-         "chipset=aga\n"
-         "chipset_compatible=A1200\n"
-         "chipmem_size=4\n"
-         "bogomem_size=0\n"
-         "fastmem_size=0\n"
-         );
+         preset_opt.cpu_model     = 68020;
+         preset_opt.chipmem_size  = 4;
+         preset_opt.bogomem_size  = 0;
+         preset_opt.fastmem_size  = 0;
+         preset_opt.chipset       = 4;
+         preset_opt.cs_compatible = CP_A1200;
          break;
 
       case EMU_CONFIG_A2000:
-         strcat(uae_preset_config,
-         "cpu_model=68000\n"
-         "chipset=ecs_agnus\n"
-         "chipset_compatible=A2000\n"
-         "chipmem_size=2\n"
-         "bogomem_size=0\n"
-         "fastmem_size=0\n"
-         );
+         preset_opt.chipmem_size  = 2;
+         preset_opt.bogomem_size  = 0;
+         preset_opt.fastmem_size  = 0;
+         preset_opt.chipset       = 1;
+         preset_opt.cs_compatible = CP_A2000;
          break;
 
       case EMU_CONFIG_A2000OG:
-         strcat(uae_preset_config,
-         "cpu_model=68000\n"
-         "chipset=ocs\n"
-         "chipset_compatible=A2000\n"
-         "chipmem_size=1\n"
-         "bogomem_size=2\n"
-         "fastmem_size=0\n"
-         );
+         preset_opt.chipmem_size  = 1;
+         preset_opt.bogomem_size  = 2;
+         preset_opt.fastmem_size  = 0;
+         preset_opt.chipset       = 0;
+         preset_opt.cs_compatible = CP_A2000;
          break;
 
       case EMU_CONFIG_A4030:
-         strcat(uae_preset_config,
-         "cpu_model=68030\n"
-         "fpu_model=68882\n"
-         "mmu_model=68030\n"
-         "cpu_24bit_addressing=false\n"
-         "chipset=aga\n"
-         "chipset_compatible=A4000\n"
-         "chipmem_size=4\n"
-         "bogomem_size=0\n"
-         "fastmem_size=8\n"
-         );
+         preset_opt.cpu_model     = 68030;
+         preset_opt.fpu_model     = 68882;
+         preset_opt.mmu_model     = 68030;
+         preset_opt.chipmem_size  = 4;
+         preset_opt.bogomem_size  = 0;
+         preset_opt.fastmem_size  = 8;
+         preset_opt.chipset       = 4;
+         preset_opt.cs_compatible = CP_A4000;
+         preset_opt.address_space_24 = 0;
          break;
 
       case EMU_CONFIG_A4040:
-         strcat(uae_preset_config,
-         "cpu_model=68040\n"
-         "fpu_model=68040\n"
-         "mmu_model=68040\n"
-         "chipset=aga\n"
-         "chipset_compatible=A4000\n"
-         "chipmem_size=4\n"
-         "bogomem_size=0\n"
-         "fastmem_size=8\n"
-         );
+         preset_opt.cpu_model     = 68040;
+         preset_opt.fpu_model     = 68040;
+         preset_opt.mmu_model     = 68040;
+         preset_opt.chipmem_size  = 4;
+         preset_opt.bogomem_size  = 0;
+         preset_opt.fastmem_size  = 8;
+         preset_opt.chipset       = 4;
+         preset_opt.cs_compatible = CP_A4000;
+         preset_opt.address_space_24 = 0;
          break;
 
       case EMU_CONFIG_CDTV:
+         preset_opt.chipmem_size  = 2;
+         preset_opt.bogomem_size  = 0;
+         preset_opt.fastmem_size  = 0;
+         preset_opt.chipset       = 1;
+         preset_opt.cs_compatible = CP_CDTV;
+
          strcat(uae_preset_config,
-         "cpu_model=68000\n"
-         "chipset=ecs_agnus\n"
-         "chipset_compatible=CDTV\n"
-         "chipmem_size=2\n"
-         "bogomem_size=0\n"
-         "fastmem_size=0\n"
          "floppy0type=-1\n"
          );
          break;
 
       case EMU_CONFIG_CD32:
+         preset_opt.cpu_model     = 68020;
+         preset_opt.chipmem_size  = 4;
+         preset_opt.bogomem_size  = 0;
+         preset_opt.fastmem_size  = 0;
+         preset_opt.chipset       = 4;
+         preset_opt.cs_compatible = CP_CD32;
+
          strcat(uae_preset_config,
-         "cpu_model=68020\n"
-         "chipset=aga\n"
-         "chipset_compatible=CD32\n"
-         "chipmem_size=4\n"
-         "bogomem_size=0\n"
-         "fastmem_size=0\n"
          "floppy0type=-1\n"
          );
          break;
 
       case EMU_CONFIG_CD32FR:
+         preset_opt.cpu_model     = 68020;
+         preset_opt.chipmem_size  = 4;
+         preset_opt.bogomem_size  = 0;
+         preset_opt.fastmem_size  = 8;
+         preset_opt.chipset       = 4;
+         preset_opt.cs_compatible = CP_CD32;
+
          strcat(uae_preset_config,
-         "cpu_model=68020\n"
-         "chipset=aga\n"
-         "chipset_compatible=CD32\n"
-         "chipmem_size=4\n"
-         "bogomem_size=0\n"
-         "fastmem_size=8\n"
          "floppy0type=-1\n"
          );
          break;
-
-      default:
-         break;
    }
+
+   snprintf(temp, sizeof(temp), "%d", preset_opt.cpu_model);
+   strcat(uae_preset_config, "cpu_model=");
+   strcat(uae_preset_config, temp);
+   strcat(uae_preset_config, "\n");
+
+   snprintf(temp, sizeof(temp), "%d", preset_opt.fpu_model);
+   strcat(uae_preset_config, "fpu_model=");
+   strcat(uae_preset_config, temp);
+   strcat(uae_preset_config, "\n");
+
+   snprintf(temp, sizeof(temp), "%d", preset_opt.mmu_model);
+   strcat(uae_preset_config, "mmu_model=");
+   strcat(uae_preset_config, temp);
+   strcat(uae_preset_config, "\n");
+
+   snprintf(temp, sizeof(temp), "%d", preset_opt.chipmem_size);
+   strcat(uae_preset_config, "chipmem_size=");
+   strcat(uae_preset_config, temp);
+   strcat(uae_preset_config, "\n");
+
+   snprintf(temp, sizeof(temp), "%d", preset_opt.bogomem_size);
+   strcat(uae_preset_config, "bogomem_size=");
+   strcat(uae_preset_config, temp);
+   strcat(uae_preset_config, "\n");
+
+   snprintf(temp, sizeof(temp), "%d", preset_opt.fastmem_size);
+   strcat(uae_preset_config, "fastmem_size=");
+   strcat(uae_preset_config, temp);
+   strcat(uae_preset_config, "\n");
+
+   strcat(uae_preset_config, "cpu_24bit_addressing=");
+   strcat(uae_preset_config, (preset_opt.address_space_24 ? "true" : "false"));
+   strcat(uae_preset_config, "\n");
+
+   snprintf(temp, sizeof(temp), "%s", csmode[preset_opt.chipset]);
+   strcat(uae_preset_config, "chipset=");
+   strcat(uae_preset_config, temp);
+   strcat(uae_preset_config, "\n");
+
+   snprintf(temp, sizeof(temp), "%s", cscompa[preset_opt.cs_compatible]);
+   strcat(uae_preset_config, "chipset_compatible=");
+   strcat(uae_preset_config, temp);
+   strcat(uae_preset_config, "\n");
 
    strlcat(uae_preset_config, uae_custom_config, sizeof(uae_preset_config));
    return uae_preset_config;
 }
 
-static void retro_config_preset(char *model)
+static void retro_config_preset(const char *model)
 {
    int model_int = emu_config_int(model);
-   strlcpy(uae_model, emu_config(model_int), sizeof(uae_model));
+   strlcpy(uae_model_config, emu_config(model_int), sizeof(uae_model_config));
    strlcpy(uae_preset, emu_config_string("model", model_int), sizeof(uae_preset));
+
    /* Allow Kickstart overrides in custom presets */
    if (string_is_empty(uae_kickstart))
    {
@@ -6464,7 +6385,7 @@ static bool retro_create_config(void)
       }
 
       /* Inspect M3U */
-      int m3u = 0;
+      unsigned m3u = 0;
       if (strendswith(full_path, "m3u"))
          m3u = dc_inspect_m3u(full_path);
 
@@ -6472,71 +6393,73 @@ static bool retro_create_config(void)
       if (dc_get_image_type(full_path) == DC_IMAGE_TYPE_FLOPPY
        || dc_get_image_type(full_path) == DC_IMAGE_TYPE_HD
        || dc_get_image_type(full_path) == DC_IMAGE_TYPE_WHDLOAD
-       || m3u == DC_IMAGE_TYPE_FLOPPY
-       || m3u == DC_IMAGE_TYPE_ARCHIVE
-       || m3u == DC_IMAGE_TYPE_HD
-       || m3u == DC_IMAGE_TYPE_WHDLOAD)
+       || m3u & (1 << DC_IMAGE_TYPE_FLOPPY)
+       || m3u & (1 << DC_IMAGE_TYPE_ARCHIVE)
+       || m3u & (1 << DC_IMAGE_TYPE_HD)
+       || m3u & (1 << DC_IMAGE_TYPE_WHDLOAD))
       {
          /* Check if model is specified in the path on 'Automatic' */
          if (!strcmp(opt_model, "auto"))
          {
             if (strstr(full_path, "(A4030)") || strstr(full_path, "(030)"))
             {
-               log_cb(RETRO_LOG_INFO, "Found '(A4030)' or '(030)' in: '%s'\n", full_path);
+               log_cb(RETRO_LOG_INFO, "Found \"(A4030)\" or \"(030)\" in: \"%s\".\n", full_path);
                retro_config_preset("A4030");
             }
             else if (strstr(full_path, "(A4040)") || strstr(full_path, "(040)"))
             {
-               log_cb(RETRO_LOG_INFO, "Found '(A4040)' or '(040)' in: '%s'\n", full_path);
+               log_cb(RETRO_LOG_INFO, "Found \"(A4040)\" or \"(040)\" in: \"%s\".\n", full_path);
                retro_config_preset("A4040");
             }
             else if (strstr(full_path, "(A1200OG)") || strstr(full_path, "(A1200NF)"))
             {
-               log_cb(RETRO_LOG_INFO, "Found '(A1200OG)' or '(A1200NF)' in: '%s'\n", full_path);
+               log_cb(RETRO_LOG_INFO, "Found \"(A1200OG)\" or \"(A1200NF)\" in: \"%s\".\n", full_path);
                retro_config_preset("A1200OG");
             }
-            else if (strstr(full_path, "(A1200)") || strstr(full_path, "CD32"))
+            else if (strstr(full_path, "(A1200)"))
             {
-               log_cb(RETRO_LOG_INFO, "Found '(A1200)' or 'CD32' in: '%s'\n", full_path);
+               log_cb(RETRO_LOG_INFO, "Found \"(A1200)\" in: \"%s\".\n", full_path);
                retro_config_preset("A1200");
             }
             else if (strstr(full_path, "(A600)"))
             {
-               log_cb(RETRO_LOG_INFO, "Found '(A600)' in: '%s'\n", full_path);
+               log_cb(RETRO_LOG_INFO, "Found \"(A600)\" in: \"%s\".\n", full_path);
                retro_config_preset("A600");
             }
             else if (strstr(full_path, "(A500+)") || strstr(full_path, "(A500PLUS)"))
             {
-               log_cb(RETRO_LOG_INFO, "Found '(A500+)' or '(A500PLUS)' in: '%s'\n", full_path);
+               log_cb(RETRO_LOG_INFO, "Found \"(A500+)\" or \"(A500PLUS)\" in: \"%s\".\n", full_path);
                retro_config_preset("A500PLUS");
             }
             else if (strstr(full_path, "(A500OG)") || strstr(full_path, "(512K)") || strstr(full_path, "(512KB)"))
             {
-               log_cb(RETRO_LOG_INFO, "Found '(A500OG)' or '(512K)' or '(512KB)' in: '%s'\n", full_path);
+               log_cb(RETRO_LOG_INFO, "Found \"(A500OG)\" or \"(512K)\" or \"(512KB)\" in: \"%s\".\n", full_path);
                retro_config_preset("A500OG");
             }
             else if (strstr(full_path, "(A500)"))
             {
-               log_cb(RETRO_LOG_INFO, "Found '(A500)' in: '%s'\n", full_path);
+               log_cb(RETRO_LOG_INFO, "Found \"(A500)\" in: \"%s\".\n", full_path);
                retro_config_preset("A500");
             }
-            else if (strstr(full_path, "AGA") || strstr(full_path, "AmigaCD"))
+            else if (strstr(full_path, "AGA") || strstr(full_path, "AmigaCD") || strstr(full_path, "CD32"))
             {
-               log_cb(RETRO_LOG_INFO, "Found 'AGA' or 'AmigaCD' in: '%s'\n", full_path);
-               /* Change to A1200 only if not already with AGA */
-               if (!strstr(uae_preset, "A1200") && !strstr(uae_preset, "A40"))
+               log_cb(RETRO_LOG_INFO, "Found \"AGA\" or \"AmigaCD\" or \"CD32\" in: \"%s\".\n", full_path);
+               /* Change to A1200 only if not already with AGA, and prevent overriding non-fast RAM preset */
+               if (strstr(opt_model_hd, "A1200"))
+                  retro_config_preset(opt_model_hd);
+               else if (!strstr(uae_preset, "A1200") && !strstr(uae_preset, "A40"))
                   retro_config_preset("A1200");
             }
             else if (strstr(full_path, "ECS"))
             {
-               log_cb(RETRO_LOG_INFO, "Found 'ECS' in: '%s'\n", full_path);
+               log_cb(RETRO_LOG_INFO, "Found \"ECS\" in: \"%s\".\n", full_path);
                /* Change to A600 only if not already with ECS */
                if (!strstr(uae_preset, "A500PLUS"))
                   retro_config_preset("A600");
             }
             else if (strstr(full_path, "OCS"))
             {
-               log_cb(RETRO_LOG_INFO, "Found 'OCS' in: '%s'\n", full_path);
+               log_cb(RETRO_LOG_INFO, "Found \"OCS\" in: \"%s\".\n", full_path);
                /* Change to A500 only if not already with OCS */
                if (!strstr(uae_preset, "A500"))
                   retro_config_preset("A500");
@@ -6544,20 +6467,21 @@ static bool retro_create_config(void)
             else
             {
                /* No model specified */
-               log_cb(RETRO_LOG_INFO, "No model specified in: '%s'\n", full_path);
+               log_cb(RETRO_LOG_INFO, "No model specified in: \"%s\".\n", full_path);
 
                /* Hard disks must default to a machine with HD interface */
                if (!opt_use_boot_hd &&
                    (dc_get_image_type(full_path) == DC_IMAGE_TYPE_HD ||
                     dc_get_image_type(full_path) == DC_IMAGE_TYPE_WHDLOAD ||
-                    m3u == DC_IMAGE_TYPE_HD ||
-                    m3u == DC_IMAGE_TYPE_WHDLOAD))
+                    m3u & (1 << DC_IMAGE_TYPE_CD) ||
+                    m3u & (1 << DC_IMAGE_TYPE_HD) ||
+                    m3u & (1 << DC_IMAGE_TYPE_WHDLOAD)))
                   retro_config_preset(opt_model_hd);
             }
          }
 
          /* Write model preset */
-         retro_config_append(uae_model);
+         retro_config_append(uae_model_config);
 
          /* Verify and write Kickstart */
          retro_config_kickstart();
@@ -6569,8 +6493,8 @@ static bool retro_create_config(void)
          /* Hard drive or WHDLoad image */
          if (dc_get_image_type(full_path) == DC_IMAGE_TYPE_HD
           || dc_get_image_type(full_path) == DC_IMAGE_TYPE_WHDLOAD
-          || m3u == DC_IMAGE_TYPE_HD
-          || m3u == DC_IMAGE_TYPE_WHDLOAD)
+          || m3u == (1 << DC_IMAGE_TYPE_HD)
+          || m3u == (1 << DC_IMAGE_TYPE_WHDLOAD))
          {
             /* M3U playlist */
             if (strendswith(full_path, "m3u"))
@@ -6581,7 +6505,7 @@ static bool retro_create_config(void)
                /* Some debugging */
                log_cb(RETRO_LOG_INFO, "M3U parsed, %d file(s) found\n", dc->count);
                for (unsigned i = 0; i < dc->count; i++)
-                  log_cb(RETRO_LOG_DEBUG, "File %d: %s\n", i+1, dc->files[i]);
+                  log_cb(RETRO_LOG_DEBUG, "File %d: %s\n", i + 1, dc->files[i]);
             }
             /* Single file */
             else
@@ -6639,7 +6563,7 @@ static bool retro_create_config(void)
 
                if (!path_is_valid(whdload_prefs_path))
                {
-                  log_cb(RETRO_LOG_INFO, "WHDLoad.prefs '%s' not found, attempting to create..\n", whdload_prefs_path);
+                  log_cb(RETRO_LOG_INFO, "WHDLoad.prefs \"%s\" not found, attempting to create...\n", whdload_prefs_path);
 
                   char whdload_prefs_gz_path[RETRO_PATH_MAX];
                   path_join(whdload_prefs_gz_path, retro_system_directory, "WHDLoad.prefs.gz");
@@ -6656,7 +6580,7 @@ static bool retro_create_config(void)
                      retro_remove(whdload_prefs_gz_path);
                   }
                   else
-                     log_cb(RETRO_LOG_ERROR, "Unable to create WHDLoad.prefs: '%s'\n", whdload_prefs_path);
+                     log_cb(RETRO_LOG_ERROR, "Unable to create WHDLoad.prefs: \"%s\".\n", whdload_prefs_path);
                }
 
                FILE *whdload_prefs_new_fp;
@@ -6673,11 +6597,17 @@ static bool retro_create_config(void)
                {
                   bool whdload_prefs_changes  = false;
                   bool whdload_quitkey_set    = false;
-                  const char *whdload_quitkey = "$4a";
+                  const char *whdload_quitkey = "$2b"; /* AK_NUMBERSIGN = RETROK_HASH */
 
                   while (fgets(whdload_buf, sizeof(whdload_buf), whdload_prefs_fp))
                   {
-                     if (opt_use_whdload_nowritecache
+                     if (opt_use_whdload_buttonwait
+                           && strstr(whdload_buf, "ButtonWait") && whdload_buf[0] == ';')
+                        snprintf(whdload_buf_row, sizeof(whdload_buf_row), "%s", whdload_buf + 1);
+                     else if (!opt_use_whdload_buttonwait
+                           && strstr(whdload_buf, "ButtonWait") && whdload_buf[0] == 'B')
+                        snprintf(whdload_buf_row, sizeof(whdload_buf_row), ";%s", whdload_buf);
+                     else if (opt_use_whdload_nowritecache
                            && strstr(whdload_buf, "NoWriteCache") && whdload_buf[0] == ';')
                         snprintf(whdload_buf_row, sizeof(whdload_buf_row), "%s", whdload_buf + 1);
                      else if (!opt_use_whdload_nowritecache
@@ -6705,7 +6635,7 @@ static bool retro_create_config(void)
                      strlcat(whdload_buf_new, whdload_buf_row, sizeof(whdload_buf_new));
                   }
 
-                  /* retro_unload triggers QuitKey (Numpad -) and runs a few frames so that data gets saved */
+                  /* retro_unload triggers QuitKey (RETROK_HASH) and runs a few frames so that data gets saved */
                   if (!opt_use_whdload_nowritecache && !whdload_quitkey_set)
                   {
                      snprintf(whdload_buf_row, sizeof(whdload_buf_row), "QuitKey=%s\n", whdload_quitkey);
@@ -6723,7 +6653,7 @@ static bool retro_create_config(void)
                         fclose(whdload_prefs_new_fp);
                      }
                      else
-                        log_cb(RETRO_LOG_ERROR, "Unable to create new WHDLoad.prefs: '%s'\n", whdload_prefs_new_path);
+                        log_cb(RETRO_LOG_ERROR, "Unable to create new WHDLoad.prefs: \"%s\".\n", whdload_prefs_new_path);
 
                      /* Remove old backup prefs */
                      retro_remove(whdload_prefs_backup_path);
@@ -6746,7 +6676,7 @@ static bool retro_create_config(void)
                   /* Verify WHDLoad */
                   if (!path_is_directory(whdload_path) || (path_is_directory(whdload_path) && !path_is_directory(whdload_c_path)))
                   {
-                     log_cb(RETRO_LOG_INFO, "WHDLoad image directory '%s' not found, attempting to create..\n", whdload_path);
+                     log_cb(RETRO_LOG_INFO, "WHDLoad image directory \"%s\" not found, attempting to create...\n", whdload_path);
                      path_mkdir(whdload_path);
 
                      char whdload_files_zip_path[RETRO_PATH_MAX];
@@ -6765,20 +6695,15 @@ static bool retro_create_config(void)
                      }
 
                      if (!path_is_directory(whdload_c_path))
-                        log_cb(RETRO_LOG_ERROR, "Unable to create WHDLoad image directory: '%s'\n", whdload_path);
+                        log_cb(RETRO_LOG_ERROR, "Unable to create WHDLoad image directory: \"%s\".\n", whdload_path);
                   }
                   /* Attach directory */
                   if (path_is_directory(whdload_path) && path_is_directory(whdload_c_path))
                   {
 #ifdef WIN32
-                     tmp_str = string_replace_substring(whdload_path, "\\", strlen("\\"), "\\\\", strlen("\\\\"));
+                     tmp_str = string_replace_substring(whdload_path, strlen(whdload_path), "\\", strlen("\\"), "\\\\", strlen("\\\\"));
 #else
-                     size_t str_len = strlen(whdload_path);
-                     tmp_str = calloc((str_len + 2), sizeof(char));
-                     strlcpy(tmp_str, whdload_path, str_len + 1);
-                     /* Force ending slash with empty path_join to make sure the path is not treated as a file */
-                     if (tmp_str[str_len - 1] != '/')
-                        path_join(tmp_str, whdload_path, "");
+                     tmp_str = strdup(whdload_path);
 #endif
                      retro_config_append("filesystem2=rw,WHDLoad:WHDLoad:\"%s\",0\n", tmp_str);
                      free(tmp_str);
@@ -6807,15 +6732,15 @@ static bool retro_create_config(void)
                            if (fcmp(whdload_theme_path, whdload_theme_default_path))
                            {
                               if (fcopy(whdload_theme_default_path, whdload_theme_path) < 0)
-                                 log_cb(RETRO_LOG_INFO, "WHDLoad failed to change theme to 'Default'\n");
+                                 log_cb(RETRO_LOG_INFO, "WHDLoad failed to change theme to \"Default\".\n");
                               else
-                                 log_cb(RETRO_LOG_INFO, "WHDLoad changed theme to 'Default'\n");
+                                 log_cb(RETRO_LOG_INFO, "WHDLoad changed theme to \"Default\".\n");
                            }
                         }
                         else if (!path_is_valid(whdload_theme_default_path) && !path_is_valid(whdload_theme_native_path))
                            ; /* No-op fallback */
                         else
-                           log_cb(RETRO_LOG_INFO, "WHDLoad theme 'Default' not found. Delete 'WHDLoad' directory to reinstall!\n");
+                           log_cb(RETRO_LOG_INFO, "WHDLoad theme \"Default\" not found. Delete \"WHDLoad\" directory to reinstall!\n");
                      }
                      /* Native (gray) */
                      else
@@ -6825,13 +6750,13 @@ static bool retro_create_config(void)
                            if (fcmp(whdload_theme_path, whdload_theme_native_path))
                            {
                               if (fcopy(whdload_theme_native_path, whdload_theme_path) < 0)
-                                 log_cb(RETRO_LOG_INFO, "WHDLoad failed to change theme to 'Native'\n");
+                                 log_cb(RETRO_LOG_INFO, "WHDLoad failed to change theme to \"Native\".\n");
                               else
-                                 log_cb(RETRO_LOG_INFO, "WHDLoad changed theme to 'Native'\n");
+                                 log_cb(RETRO_LOG_INFO, "WHDLoad changed theme to \"Native\".\n");
                            }
                         }
                         else
-                           log_cb(RETRO_LOG_INFO, "WHDLoad theme 'Native' not found. Delete 'WHDLoad' directory to reinstall!\n");
+                           log_cb(RETRO_LOG_INFO, "WHDLoad theme \"Native\" not found. Delete \"WHDLoad\" directory to reinstall!\n");
                      }
                   }
 
@@ -6844,21 +6769,16 @@ static bool retro_create_config(void)
                   if (path_is_directory(whdsaves_path))
                   {
 #ifdef WIN32
-                     tmp_str = string_replace_substring(whdsaves_path, "\\", strlen("\\"), "\\\\", strlen("\\\\"));
+                     tmp_str = string_replace_substring(whdsaves_path, strlen(whdsaves_path), "\\", strlen("\\"), "\\\\", strlen("\\\\"));
 #else
-                     size_t str_len = strlen(whdsaves_path);
-                     tmp_str = calloc((str_len + 2), sizeof(char));
-                     strlcpy(tmp_str, whdsaves_path, str_len + 1);
-                     /* Force ending slash with empty path_join to make sure the path is not treated as a file */
-                     if (tmp_str[str_len - 1] != '/')
-                        path_join(tmp_str, whdsaves_path, "");
+                     tmp_str = strdup(whdsaves_path);
 #endif
                      retro_config_append("filesystem2=rw,WHDSaves:WHDSaves:\"%s\",0\n", tmp_str);
                      free(tmp_str);
                      tmp_str = NULL;
                   }
                   else
-                     log_cb(RETRO_LOG_ERROR, "Unable to create WHDSaves image directory: '%s'\n", whdsaves_path);
+                     log_cb(RETRO_LOG_ERROR, "Unable to create WHDSaves image directory: \"%s\".\n", whdsaves_path);
                }
                /* WHDLoad HDF mode */
                else if (opt_use_whdload == 2)
@@ -6869,7 +6789,7 @@ static bool retro_create_config(void)
                   /* Verify WHDLoad.hdf */
                   if (!path_is_valid(whdload_hdf_path))
                   {
-                     log_cb(RETRO_LOG_INFO, "WHDLoad image file '%s' not found, attempting to create..\n", whdload_hdf_path);
+                     log_cb(RETRO_LOG_INFO, "WHDLoad image file \"%s\" not found, attempting to create...\n", whdload_hdf_path);
 
                      char whdload_hdf_gz_path[RETRO_PATH_MAX];
                      path_join(whdload_hdf_gz_path, retro_save_directory, "WHDLoad.hdf.gz");
@@ -6886,12 +6806,12 @@ static bool retro_create_config(void)
                         retro_remove(whdload_hdf_gz_path);
                      }
                      else
-                        log_cb(RETRO_LOG_ERROR, "Unable to create WHDLoad image file: '%s'\n", whdload_hdf_path);
+                        log_cb(RETRO_LOG_ERROR, "Unable to create WHDLoad image file: \"%s\".\n", whdload_hdf_path);
                   }
                   /* Attach HDF */
                   if (path_is_valid(whdload_hdf_path))
                   {
-                     tmp_str = string_replace_substring(whdload_hdf_path, "\\", strlen("\\"), "\\\\", strlen("\\\\"));
+                     tmp_str = string_replace_substring(whdload_hdf_path, strlen(whdload_hdf_path), "\\", strlen("\\"), "\\\\", strlen("\\\\"));
                      retro_config_append("hardfile2=rw,WHDLoad:\"%s\",32,1,2,512,0,,uae0\n", tmp_str);
                      free(tmp_str);
                      tmp_str = NULL;
@@ -6902,7 +6822,7 @@ static bool retro_create_config(void)
                   path_join(whdsaves_hdf_path, retro_save_directory, "WHDSaves.hdf");
                   if (!path_is_valid(whdsaves_hdf_path))
                   {
-                     log_cb(RETRO_LOG_INFO, "WHDSaves image file '%s' not found, attempting to create..\n", whdsaves_hdf_path);
+                     log_cb(RETRO_LOG_INFO, "WHDSaves image file \"%s\" not found, attempting to create...\n", whdsaves_hdf_path);
 
                      char whdsaves_hdf_gz_path[RETRO_PATH_MAX];
                      path_join(whdsaves_hdf_gz_path, retro_save_directory, "WHDSaves.hdf.gz");
@@ -6919,12 +6839,12 @@ static bool retro_create_config(void)
                         retro_remove(whdsaves_hdf_gz_path);
                      }
                      else
-                        log_cb(RETRO_LOG_ERROR, "Unable to create WHDSaves image file: '%s'\n", whdsaves_hdf_path);
+                        log_cb(RETRO_LOG_ERROR, "Unable to create WHDSaves image file: \"%s\".\n", whdsaves_hdf_path);
                   }
                   /* Attach HDF */
                   if (path_is_valid(whdsaves_hdf_path))
                   {
-                     tmp_str = string_replace_substring(whdsaves_hdf_path, "\\", strlen("\\"), "\\\\", strlen("\\\\"));
+                     tmp_str = string_replace_substring(whdsaves_hdf_path, strlen(whdsaves_hdf_path), "\\", strlen("\\"), "\\\\", strlen("\\\\"));
                      retro_config_append("hardfile2=rw,WHDSaves:\"%s\",32,1,2,512,0,,uae0\n", tmp_str);
                      free(tmp_str);
                      tmp_str = NULL;
@@ -6932,14 +6852,9 @@ static bool retro_create_config(void)
 
                   /* Attach retro_system_directory as a read only hard drive for WHDLoad kickstarts/prefs/key */
 #ifdef WIN32
-                  tmp_str = string_replace_substring(retro_system_directory, "\\", strlen("\\"), "\\\\", strlen("\\\\"));
+                  tmp_str = string_replace_substring(retro_system_directory, strlen(retro_system_directory), "\\", strlen("\\"), "\\\\", strlen("\\\\"));
 #else
-                  size_t str_len = strlen(retro_system_directory);
-                  tmp_str = calloc((str_len + 2), sizeof(char));
-                  strlcpy(tmp_str, retro_system_directory, str_len + 1);
-                  /* Force ending slash with empty path_join to make sure the path is not treated as a file */
-                  if (tmp_str[str_len - 1] != '/')
-                     path_join(tmp_str, retro_system_directory, "");
+                  tmp_str = strdup(retro_system_directory);
 #endif
                   retro_config_append("filesystem2=ro,RASystem:RASystem:\"%s\",-128\n", tmp_str);
                   free(tmp_str);
@@ -6964,7 +6879,7 @@ static bool retro_create_config(void)
                /* Some debugging */
                log_cb(RETRO_LOG_INFO, "M3U parsed, %d file(s) found\n", dc->count);
                for (unsigned i = 0; i < dc->count; i++)
-                  log_cb(RETRO_LOG_DEBUG, "File %d: %s\n", i+1, dc->files[i]);
+                  log_cb(RETRO_LOG_DEBUG, "File %d: %s\n", i + 1, dc->files[i]);
             }
             /* Single file */
             else
@@ -6990,31 +6905,40 @@ static bool retro_create_config(void)
                /* Init first disk */
                dc->index = 0;
                dc->eject_state = false;
-               display_current_image(dc->labels[dc->index], true);
-               log_cb(RETRO_LOG_INFO, "Disk (%d) inserted in drive DF0: '%s'\n", dc->index+1, dc->files[dc->index]);
-               tmp_str = utf8_to_local_string_alloc(dc->files[0]);
-               retro_config_append("floppy0=%s\n", tmp_str);
-               free(tmp_str);
-               tmp_str = NULL;
+               if (dc->types[dc->index] == DC_IMAGE_TYPE_FLOPPY)
+               {
+                  log_cb(RETRO_LOG_INFO, "Disk (%d) inserted in drive DF0: \"%s\".\n", dc->index + 1, dc->files[dc->index]);
+                  tmp_str = utf8_to_local_string_alloc(dc->files[0]);
+                  retro_config_append("floppy0=%s\n", tmp_str);
+                  free(tmp_str);
+                  tmp_str = NULL;
+               }
 
                /* Append rest of the disks to the config if M3U is a MultiDrive-M3U */
                if (strstr(full_path, "(MD)") != NULL || opt_floppy_multidrive)
                {
-                  for (unsigned i = 1; i < dc->count; i++)
+                  uint8_t i;
+                  uint8_t floppy = 1;
+
+                  for (i = 1; i < dc->count; i++)
                   {
-                     if (i < MAX_FLOPPY_DRIVES)
+                     if (floppy < MAX_FLOPPY_DRIVES)
                      {
                         if (strstr(dc->labels[i], M3U_SAVEDISK_LABEL))
                            continue;
 
-                        log_cb(RETRO_LOG_INFO, "Disk (%d) inserted in drive DF%d: '%s'\n", i+1, i, dc->files[i]);
+                        if (dc->types[i] != DC_IMAGE_TYPE_FLOPPY)
+                           continue;
+
+                        log_cb(RETRO_LOG_INFO, "Disk (%d) inserted in drive DF%d: \"%s\".\n", floppy + 1, floppy, dc->files[i]);
                         tmp_str = utf8_to_local_string_alloc(dc->files[i]);
-                        retro_config_append("floppy%d=%s\n", i, tmp_str);
+                        retro_config_append("floppy%d=%s\n", floppy, tmp_str);
                         free(tmp_str);
                         tmp_str = NULL;
 
                         /* By default only DF0: is enabled, so floppyXtype needs to be set on the extra drives */
-                        retro_config_append("floppy%dtype=%d\n", i, 0); /* 0 = 3.5" DD */
+                        retro_config_append("floppy%dtype=%d\n", floppy, 0); /* 0 = 3.5" DD */
+                        floppy++;
                      }
                      else
                      {
@@ -7023,7 +6947,34 @@ static bool retro_create_config(void)
                      }
                   }
                }
+
+               if (m3u & (1 << DC_IMAGE_TYPE_CD))
+               {
+                  uint8_t i;
+                  uint8_t drive = 0;
+                  /* Attach CD disk */
+                  for (i = 0; i < dc->count && !drive; i++)
+                  {
+                     if (dc->types[i] != DC_IMAGE_TYPE_CD)
+                        continue;
+
+                     log_cb(RETRO_LOG_INFO, "CD (%d) inserted in drive CD0: \"%s\".\n", drive + 1, dc->files[i]);
+                     retro_config_append("cdimage0=%s,%s\n", dc->files[i], (opt_cd_startup_delayed_insert ? "delay" : "")); /* ","-suffix needed if filename contains "," */
+                     drive++;
+                  }
+
+                  if (drive)
+                     retro_config_append("scsi=true\n");
+               }
             }
+
+            /* Attach hard drive(s) */
+            if (m3u & (1 << DC_IMAGE_TYPE_HD))
+               retro_config_harddrives();
+
+            /* Show current index image */
+            if (dc->count)
+               display_current_image(dc->labels[dc->index], true);
 
             /* Scan for save disk 0, append if exists */
             if (dc->count)
@@ -7039,24 +6990,24 @@ static bool retro_create_config(void)
       }
       /* CD image */
       else if (dc_get_image_type(full_path) == DC_IMAGE_TYPE_CD
-            || m3u == DC_IMAGE_TYPE_CD)
+            || m3u == (1 << DC_IMAGE_TYPE_CD))
       {
          /* Check if model is specified in the path on 'Automatic' */
          if (!strcmp(opt_model, "auto"))
          {
             if (strstr(full_path, "(CD32FR)") || strstr(full_path, "FastRAM"))
             {
-               log_cb(RETRO_LOG_INFO, "Found '(CD32FR)' or 'FastRAM' in: '%s'\n", full_path);
+               log_cb(RETRO_LOG_INFO, "Found \"(CD32FR)\" or \"FastRAM\" in: \"%s\".\n", full_path);
                retro_config_preset("CD32FR");
             }
             else if (strstr(full_path, "(CD32)") || strstr(full_path, "(CD32NF)"))
             {
-               log_cb(RETRO_LOG_INFO, "Found '(CD32)' or '(CD32NF)' in: '%s'\n", full_path);
+               log_cb(RETRO_LOG_INFO, "Found \"(CD32)\" or \"(CD32NF)\" in: \"%s\".\n", full_path);
                retro_config_preset("CD32");
             }
             else if (strstr(full_path, "CDTV"))
             {
-               log_cb(RETRO_LOG_INFO, "Found 'CDTV' in: '%s'\n", full_path);
+               log_cb(RETRO_LOG_INFO, "Found \"CDTV\" in: \"%s\".\n", full_path);
                retro_config_preset("CDTV");
             }
             else
@@ -7068,12 +7019,12 @@ static bool retro_create_config(void)
                   retro_config_preset(opt_model_cd);
 
                /* No model specified */
-               log_cb(RETRO_LOG_INFO, "No model specified in: '%s'\n", full_path);
+               log_cb(RETRO_LOG_INFO, "No model specified in: \"%s\".\n", full_path);
             }
          }
 
          /* Write model preset */
-         retro_config_append(uae_model);
+         retro_config_append(uae_model_config);
 
          /* Verify and write Kickstart */
          retro_config_kickstart();
@@ -7094,7 +7045,7 @@ static bool retro_create_config(void)
             /* Some debugging */
             log_cb(RETRO_LOG_INFO, "M3U parsed, %d file(s) found\n", dc->count);
             for (unsigned i = 0; i < dc->count; i++)
-               log_cb(RETRO_LOG_DEBUG, "File %d: %s\n", i+1, dc->files[i]);
+               log_cb(RETRO_LOG_DEBUG, "File %d: %s\n", i + 1, dc->files[i]);
          }
          /* Single file */
          else
@@ -7121,7 +7072,7 @@ static bool retro_create_config(void)
             dc->index = 0;
             dc->eject_state = false;
             display_current_image(dc->labels[dc->index], true);
-            log_cb(RETRO_LOG_INFO, "CD (%d) inserted in drive CD0: '%s'\n", dc->index+1, dc->files[dc->index]);
+            log_cb(RETRO_LOG_INFO, "CD (%d) inserted in drive CD0: \"%s\".\n", dc->index + 1, dc->files[dc->index]);
             retro_config_append("cdimage0=%s,%s\n", dc->files[0], (opt_cd_startup_delayed_insert ? "delay" : "")); /* ","-suffix needed if filename contains "," */
          }
 
@@ -7134,7 +7085,7 @@ static bool retro_create_config(void)
          char disk_image[RETRO_PATH_MAX] = {0};
 
          /* Write model preset */
-         retro_config_append(uae_model);
+         retro_config_append(uae_model_config);
 
          /* Write common config */
          retro_config_append(uae_config);
@@ -7180,17 +7131,17 @@ static bool retro_create_config(void)
                }
 
                /* Skip overrides always */
-               if (opt_cpu_model > -1 && strstr(filebuf, "cpu_model=") && filebuf[0] == 'c')
+               if (override_opt.cpu_model > -1 && strstr(filebuf, "cpu_model=") && filebuf[0] == 'c')
                   continue;
-               if (opt_fpu_model > -1 && strstr(filebuf, "fpu_model=") && filebuf[0] == 'f')
+               if (override_opt.fpu_model > -1 && strstr(filebuf, "fpu_model=") && filebuf[0] == 'f')
                   continue;
-               if (opt_chipmem_size > -1 && strstr(filebuf, "chipmem_size=") && filebuf[0] == 'c')
+               if (override_opt.chipmem_size > -1 && strstr(filebuf, "chipmem_size=") && filebuf[0] == 'c')
                   continue;
-               if (opt_bogomem_size > -1 && strstr(filebuf, "bogomem_size=") && filebuf[0] == 'b')
+               if (override_opt.bogomem_size > -1 && strstr(filebuf, "bogomem_size=") && filebuf[0] == 'b')
                   continue;
-               if (opt_fastmem_size > -1 && strstr(filebuf, "fastmem_size=") && filebuf[0] == 'f')
+               if (override_opt.fastmem_size > -1 && strstr(filebuf, "fastmem_size=") && filebuf[0] == 'f')
                   continue;
-               if (opt_z3mem_size > -1 && strstr(filebuf, "z3mem_size=") && filebuf[0] == 'z')
+               if (override_opt.z3mem_size > -1 && strstr(filebuf, "z3mem_size=") && filebuf[0] == 'z')
                   continue;
 
                /* Append */
@@ -7229,6 +7180,93 @@ static bool retro_create_config(void)
                      dc_add_file(dc, disk_image, disk_image_label);
                   }
                }
+
+               /* Parse and replace presets */
+               {
+                  if (strstr(filebuf, "chipmem_size=") && filebuf[0] == 'c')
+                  {
+                     char *token = strtok(filebuf, "=");
+                     while (token != NULL)
+                     {
+                        preset_opt.chipmem_size = atoi(token);
+                        token = strtok(NULL, "=");
+                     }
+                  }
+
+                  if (strstr(filebuf, "bogomem_size=") && filebuf[0] == 'b')
+                  {
+                     char *token = strtok(filebuf, "=");
+                     while (token != NULL)
+                     {
+                        preset_opt.bogomem_size = atoi(token);
+                        token = strtok(NULL, "=");
+                     }
+                  }
+
+                  if (strstr(filebuf, "fastmem_size=") && filebuf[0] == 'f')
+                  {
+                     char *token = strtok(filebuf, "=");
+                     while (token != NULL)
+                     {
+                        preset_opt.fastmem_size = atoi(token);
+                        token = strtok(NULL, "=");
+                     }
+                  }
+
+                  if (strstr(filebuf, "z3mem_size=") && filebuf[0] == 'z')
+                  {
+                     char *token = strtok(filebuf, "=");
+                     while (token != NULL)
+                     {
+                        preset_opt.z3mem_size = atoi(token);
+                        token = strtok(NULL, "=");
+                     }
+                  }
+
+                  if (strstr(filebuf, "cpu_model=") && filebuf[0] == 'c')
+                  {
+                     char *token = strtok(filebuf, "=");
+                     while (token != NULL)
+                     {
+                        preset_opt.cpu_model = atoi(token);
+                        token = strtok(NULL, "=");
+                     }
+                  }
+
+                  if (strstr(filebuf, "fpu_model=") && filebuf[0] == 'f')
+                  {
+                     char *token = strtok(filebuf, "=");
+                     while (token != NULL)
+                     {
+                        preset_opt.fpu_model = atoi(token);
+                        token = strtok(NULL, "=");
+                     }
+                  }
+
+                  if (strstr(filebuf, "chipset=") && filebuf[0] == 'c')
+                  {
+                     char value[255];
+                     char *token = strtok(filebuf, "=");
+                     while (token != NULL)
+                     {
+                        snprintf(value, sizeof(value), "%s", trimwhitespace(token));
+                        token = strtok(NULL, "=");
+                     }
+                     cfgfile_strval ("chipset", value, _T("chipset"), &preset_opt.chipset, csmode, 0);
+                  }
+
+                  if (strstr(filebuf, "chipset_compatible=") && filebuf[0] == 'c')
+                  {
+                     char value[255];
+                     char *token = strtok(filebuf, "=");
+                     while (token != NULL)
+                     {
+                        snprintf(value, sizeof(value), "%s", trimwhitespace(token));
+                        token = strtok(NULL, "=");
+                     }
+                     cfgfile_strval ("chipset_compatible", value, _T("chipset_compatible"), &preset_opt.cs_compatible, cscompa, 0);
+                  }
+               }
             }
             
             fclose(configfile_custom);
@@ -7241,7 +7279,7 @@ static bool retro_create_config(void)
             dc->index = 0;
             dc->eject_state = false;
             display_current_image(dc->labels[dc->index], true);
-            log_cb(RETRO_LOG_INFO, "Disk (%d) inserted in drive DF0: '%s'\n", dc->index+1, dc->files[dc->index]);
+            log_cb(RETRO_LOG_INFO, "Disk (%d) inserted in drive DF0: \"%s\".\n", dc->index + 1, dc->files[dc->index]);
          }
 
          /* Verify and write Kickstart */
@@ -7251,7 +7289,7 @@ static bool retro_create_config(void)
       else
       {
          /* Write model preset */
-         retro_config_append(uae_model);
+         retro_config_append(uae_model_config);
 
          /* Verify and write Kickstart */
          retro_config_kickstart();
@@ -7260,8 +7298,8 @@ static bool retro_create_config(void)
          retro_config_append(uae_config);
 
          /* Unsupported file format */
-         log_cb(RETRO_LOG_ERROR, "Unsupported file format: '%s'\n", full_path);
-         snprintf(retro_message_msg, sizeof(retro_message_msg), "Unsupported file format: '%s'", path_get_extension(full_path));
+         log_cb(RETRO_LOG_ERROR, "Unsupported file format: \"%s\".\n", full_path);
+         snprintf(retro_message_msg, sizeof(retro_message_msg), "Unsupported file format: \"%s\"", path_get_extension(full_path));
          retro_message = true;
       }
    }
@@ -7269,7 +7307,7 @@ static bool retro_create_config(void)
    else
    {
       /* Write model preset */
-      retro_config_append(uae_model);
+      retro_config_append(uae_model_config);
 
       /* Verify and write Kickstart */
       retro_config_kickstart();
@@ -7288,7 +7326,7 @@ static bool retro_create_config(void)
    path_join(configfile_path, retro_save_directory, LIBRETRO_PUAE_PREFIX "_global.uae");
    if (path_is_valid(configfile_path))
    {
-      log_cb(RETRO_LOG_INFO, "Appending global configuration: '%s'\n", configfile_path);
+      log_cb(RETRO_LOG_INFO, "Appending global configuration: \"%s\".\n", configfile_path);
 
       FILE *configfile;
       char filebuf[RETRO_PATH_MAX];
@@ -7307,7 +7345,7 @@ static bool retro_create_config(void)
          retro_save_directory, DIR_SEP_STR, path_basename(tmp_str), ".uae");
    if (path_is_valid(configfile_path))
    {
-      log_cb(RETRO_LOG_INFO, "Appending content configuration: '%s'\n", configfile_path);
+      log_cb(RETRO_LOG_INFO, "Appending content configuration: \"%s\".\n", configfile_path);
 
       FILE *configfile;
       char filebuf[RETRO_PATH_MAX];
@@ -7331,7 +7369,7 @@ static bool retro_create_config(void)
    }
 
    if (cpu_cycle_exact_force)
-      log_cb(RETRO_LOG_INFO, "Forcing Cycle-exact\n");
+      log_cb(RETRO_LOG_INFO, "Forcing Cycle-exact.\n");
 
    /* Scan for specific rows and print the final config in debug log for copypaste purposes */
    log_cb(RETRO_LOG_DEBUG, "Generated config:\n");
@@ -7378,9 +7416,15 @@ static void retro_reset_hard(void)
    video_config_old = (forced_video < 0) ? 0 : video_config_old;
    fake_ntsc = false;
    locked_video_horizontal = false;
+
+   /* Preset override circle:
+    * - config preset models require core options
+    * - core option overrides require config presets */
    update_variables();
    retro_create_config();
-   uae_restart(0, NULL); /* opengui, cfgfile */
+   update_variables();
+
+   uae_reset(1, 0); /* hardreset, keyboardreset */
 }
 
 static void retro_reset_soft(void)
@@ -7393,20 +7437,21 @@ static void retro_reset_soft(void)
 /* Vertical centering */
 static void update_video_center_vertical(void)
 {
-   int retroh_crop_normal     = (video_config & PUAE_VIDEO_DOUBLELINE) ? retroh_crop / 2 : retroh_crop;
+   int retroh_crop_normal     = (video_config & PUAE_VIDEO_DOUBLELINE) && !retro_doublescan ? retroh_crop / 2 : retroh_crop;
    int thisframe_y_adjust_new = thisframe_y_adjust_old;
    int thisframe_y_adjust_cur = thisframe_y_adjust;
+   int first_drawn_limit      = 150;
+   int last_drawn_limit       = 150;
 
-   /* Always reset default top border */
-   thisframe_y_adjust = minfirstline;
+   /* Reset default top border except with doublescan use first drawn line */
+   thisframe_y_adjust = (video_productivity) ? retro_thisframe_first_drawn_line : minfirstline;
 
    /* Need proper values for calculations */
    if (!opt_vertical_offset_auto)
       thisframe_y_adjust_new = thisframe_y_adjust + opt_vertical_offset;
    else if ( retro_thisframe_first_drawn_line       != retro_thisframe_last_drawn_line
          && (retro_thisframe_first_drawn_line > 0   && retro_thisframe_last_drawn_line > 0)
-         && (  (!retro_av_info_is_lace && (retro_thisframe_first_drawn_line < 150 && retro_thisframe_last_drawn_line > 150))
-            || ( retro_av_info_is_lace && (retro_thisframe_first_drawn_line < 150 || retro_thisframe_last_drawn_line > 150)))
+         && (retro_thisframe_first_drawn_line < first_drawn_limit || retro_thisframe_last_drawn_line > last_drawn_limit)
       )
       thisframe_y_adjust_new = (retro_thisframe_last_drawn_line - retro_thisframe_first_drawn_line - retroh_crop_normal) / 2 + retro_thisframe_first_drawn_line;
    else if (retro_thisframe_first_drawn_line == -1 && retro_thisframe_last_drawn_line == -1 && thisframe_y_adjust_old != 0)
@@ -7415,10 +7460,6 @@ static void update_video_center_vertical(void)
    /* Sensible limits */
    thisframe_y_adjust_new = (thisframe_y_adjust_new < 0) ? 0 : thisframe_y_adjust_new;
    thisframe_y_adjust_new = (thisframe_y_adjust_new > (minfirstline + 70)) ? (minfirstline + 70) : thisframe_y_adjust_new;
-
-   /* KS 1.3 startup centers off screen for a moment if allowed */
-   if (retro_thisframe_last_drawn_line < 200 && thisframe_y_adjust_new < minfirstline)
-      thisframe_y_adjust_new = thisframe_y_adjust_old;
 
    /* Remember the previous value */
    thisframe_y_adjust_old = thisframe_y_adjust_new;
@@ -7432,7 +7473,7 @@ static void update_video_center_vertical(void)
    }
 
    /* Disallow centering if trying to crop NTSC aspect in full PAL mode */
-   if (retroh == retroh_crop)
+   if (retroh == retroh_crop && !video_productivity)
       thisframe_y_adjust = thisframe_y_adjust_new = minfirstline;
 
    /* Offset adjustments */
@@ -7440,7 +7481,7 @@ static void update_video_center_vertical(void)
    thisframe_y_adjust_new = (thisframe_y_adjust_new < 0) ? 0 : thisframe_y_adjust_new;
 
    /* Change value always due to the possible change of interlace */
-   retroy_crop = thisframe_y_adjust_new * ((video_config & PUAE_VIDEO_DOUBLELINE) ? 2 : 1);
+   retroy_crop = thisframe_y_adjust_new * ((video_config & PUAE_VIDEO_DOUBLELINE) && !retro_doublescan ? 2 : 1);
 
 #if 0
    printf("FIRSTDRAWN:%6d LASTDRAWN:%6d   yadjust:%3d old:%3d cur:%3d croph:%d cropy:%d\n", retro_thisframe_first_drawn_line, retro_thisframe_last_drawn_line, thisframe_y_adjust, thisframe_y_adjust_old, thisframe_y_adjust_cur, retroh_crop, retroy_crop);
@@ -7472,7 +7513,7 @@ static void update_video_center_horizontal(void)
    if (locked_video_horizontal)
       ; /* no-op */
    else if (!opt_horizontal_offset_auto)
-      visible_left_border_new = visible_left_border + opt_horizontal_offset;
+      visible_left_border_new = visible_left_border + (opt_horizontal_offset * width_multiplier);
    else if (retro_min_diwstart != retro_max_diwstop
          && retro_min_diwstart > 0
          && retro_max_diwstop  > 0
@@ -7482,6 +7523,10 @@ static void update_video_center_horizontal(void)
       visible_left_border_new = (retro_max_diwstop - retro_min_diwstart - retrow_crop) / 2 + retro_min_diwstart;
    else if (retro_min_diwstart == MAX_STOP && retro_max_diwstop == 0 && visible_left_border != 0)
       visible_left_border_new = visible_left_border;
+
+   /* CD32 boot special */
+   if (retro_max_diwstop < retro_min_diwstart)
+      visible_left_border_new = default_left_border;
 
    /* Sensible limits */
    visible_left_border_new = (visible_left_border_new < 0) ? 0 : visible_left_border_new;
@@ -7500,6 +7545,14 @@ static void update_video_center_horizontal(void)
       if (visible_left_border < 93 * width_multiplier)
          visible_left_border = visible_left_border_new = 93 * width_multiplier;
    }
+
+   /* Special Super72 modes */
+   if (video_productivity && (retrow == PUAE_VIDEO_WIDTH_S72 || retrow == PUAE_VIDEO_WIDTH_S72 * 2))
+      visible_left_border = retro_min_diwstart;
+
+   /* Special DBL modes */
+   if (retro_doublescan)
+      visible_left_border = retro_min_diwstart;
 
    /* Offset adjustments */
    visible_left_border_new -= visible_left_border;
@@ -7523,7 +7576,7 @@ static void update_video_center_horizontal(void)
 
 static bool update_vresolution(bool update)
 {
-   int tmp_interlace_seen = retro_av_info_is_lace || gfxvidinfo->drawbuffer.tempbufferinuse;
+   int tmp_interlace_seen = retro_av_info_is_lace || retro_doublescan || gfxvidinfo->drawbuffer.tempbufferinuse;
 
    /* Lores force to single line */
    if (!(video_config & PUAE_VIDEO_HIRES) && !(video_config & PUAE_VIDEO_SUPERHIRES))
@@ -7583,24 +7636,63 @@ static void update_audiovideo(void)
    /* Automatic video resolution */
    if (opt_video_resolution_auto && retro_min_diwstart != MAX_STOP)
    {
-      int current_resolution   = GET_RES_DENISE (bplcon0);
+      int current_resolution   = detected_screen_resolution;
       bool request_init_custom = false;
+      static uint8_t hsytrue_count = 0;
+
 #if 0
       printf("BPLCON0: %x, %d, %d-%d, %d-%d\n", bplcon0, current_resolution, diwfirstword_total, diwlastword_total, retro_min_diwstart, retro_max_diwstop);
 #endif
+      if (opt_video_resolution_auto == RESOLUTION_AUTO_SUPERHIRES)
+         opt_video_resolution_auto = RESOLUTION_AUTO_HIRES;
 
-      /* Super Skidmarks force to SuperHires */
-      if (current_resolution == 1 && bplcon0 == 0xC201
-            && (retro_min_diwstart == 322 || retro_min_diwstart == 644)
-            && (diwlastword_total == 898 || diwlastword_total == 1796))
-         current_resolution = 2;
-      /* Lores force to Hires */
-      else if (current_resolution == 0)
-         current_resolution = 1;
+      if (current_resolution == RES_SUPERHIRES && retro_doublescan)
+         current_resolution = RES_HIRES;
+
+      /* Super Skidmarks force SuperHires */
+      if (     current_resolution == RES_HIRES
+            && bplcon0 == 0xC201
+            && (retro_min_diwstart == 322 || retro_min_diwstart == 322 * 2)
+            && (diwlastword_total  == 898 || diwlastword_total  == 898 * 2)
+         )
+         current_resolution = RES_SUPERHIRES;
+      /* Super Stardust prevent Lores */
+      else if (opt_video_resolution_auto == RESOLUTION_AUTO_LORES
+            && current_resolution == RES_LORES
+            && (diwlastword_total == 894 || diwlastword_total == 898 || diwlastword_total == 910 || diwlastword_total == 914 || diwlastword_total == 1860)
+            && (retro_min_diwstart == 121 || retro_min_diwstart == 121 * 2 || retro_min_diwstart == 128 || retro_min_diwstart == 128 * 2 || retro_min_diwstart == 129 || retro_min_diwstart == 129 * 2)
+            && (retro_max_diwstop  == 448 || retro_max_diwstop  == 448 * 2 || retro_max_diwstop  == 449 || retro_max_diwstop  == 449 * 2 || retro_max_diwstop  == 457 || retro_max_diwstop  == 457 * 2)
+         )
+      {
+         if (hsytrue_count)
+            hsytrue_count--;
+         if (bplcon0 & BEAMCON0_HSYTRUE)
+         {
+            current_resolution = RES_HIRES;
+            hsytrue_count = 2;
+         }
+         else if (!(bplcon0 & BEAMCON0_HSYTRUE) && hsytrue_count)
+            current_resolution = -1;
+      }
+      /* Lores force Hires in 'auto' */
+      else if (opt_video_resolution_auto == RESOLUTION_AUTO_HIRES && current_resolution == 0)
+         current_resolution = RES_HIRES;
+
+      /* Ignore Lores spikes in Lemmings */
+      if (     opt_video_resolution_auto == RESOLUTION_AUTO_LORES
+            && changed_prefs.gfx_resolution == RES_HIRES
+            && current_resolution == RES_LORES
+            && bplcon0 == (BEAMCON0_HARDDIS | BEAMCON0_VARVSYEN)
+         )
+         current_resolution = -1;
+
+      /* Ignore always */
+      if (bplcon0 & BEAMCON0_CSCBEN)
+         current_resolution = -1;
 
       switch (current_resolution)
       {
-         case 1:
+         case RES_HIRES:
             if (!(video_config & PUAE_VIDEO_HIRES))
             {
                changed_prefs.gfx_resolution = RES_HIRES;
@@ -7611,7 +7703,7 @@ static void update_audiovideo(void)
                request_init_custom = true;
             }
             break;
-         case 2:
+         case RES_SUPERHIRES:
             if (!(video_config & PUAE_VIDEO_SUPERHIRES))
             {
                changed_prefs.gfx_resolution = RES_SUPERHIRES;
@@ -7619,6 +7711,17 @@ static void update_audiovideo(void)
                video_config &= ~PUAE_VIDEO_HIRES;
                defaultw = retrow = PUAE_VIDEO_WIDTH * 2;
                retro_max_diwlastword = retro_max_diwlastword_hires * 2;
+               request_init_custom = true;
+            }
+            break;
+         case RES_LORES:
+            if ((video_config & PUAE_VIDEO_HIRES) || (video_config & PUAE_VIDEO_SUPERHIRES))
+            {
+               changed_prefs.gfx_resolution = RES_LORES;
+               video_config &= ~PUAE_VIDEO_HIRES;
+               video_config &= ~PUAE_VIDEO_SUPERHIRES;
+               defaultw = retrow = PUAE_VIDEO_WIDTH / 2;
+               retro_max_diwlastword = retro_max_diwlastword_hires / 2;
                request_init_custom = true;
             }
             break;
@@ -7669,14 +7772,16 @@ static void update_audiovideo(void)
          (retro_thisframe_first_drawn_line == -1 && retro_thisframe_last_drawn_line == -1))
       )
    {
-      int min_height = 10;
+      int min_height = 4;
+      int retro_thisframe_height = MAX(retro_thisframe_last_drawn_line - retro_thisframe_first_drawn_line + 1, 200);
       int retro_thisframe_first_drawn_line_delta = abs(retro_thisframe_first_drawn_line_old - retro_thisframe_first_drawn_line);
       int retro_thisframe_last_drawn_line_delta  = abs(retro_thisframe_last_drawn_line_old - retro_thisframe_last_drawn_line);
 
 #if 0
-      printf("thisframe first:%3d old:%3d start:%3d delta:%3d last:%3d old:%3d start:%3d delta:%3d\n",
+      printf("thisframe first:%3d old:%3d start:%3d delta:%3d last:%3d old:%3d start:%3d delta:%3d - h:%3d\n",
             retro_thisframe_first_drawn_line, retro_thisframe_first_drawn_line_old, retro_thisframe_first_drawn_line_start, retro_thisframe_first_drawn_line_delta,
-            retro_thisframe_last_drawn_line, retro_thisframe_last_drawn_line_old, retro_thisframe_last_drawn_line_start, retro_thisframe_last_drawn_line_delta);
+            retro_thisframe_last_drawn_line, retro_thisframe_last_drawn_line_old, retro_thisframe_last_drawn_line_start, retro_thisframe_last_drawn_line_delta,
+            retro_thisframe_height);
 #endif
 
       /* For some odd reason KS2+ Kickstarts start with bogus last_drawn_line,
@@ -7699,7 +7804,8 @@ static void update_audiovideo(void)
          && retro_thisframe_first_drawn_line != -1
          && retro_thisframe_last_drawn_line  != -1
          && retro_thisframe_last_drawn_line - retro_thisframe_first_drawn_line > min_height
-         && (retro_thisframe_first_drawn_line_delta > (video_config & PUAE_VIDEO_DOUBLELINE) ? 1 : 0 || retro_thisframe_last_drawn_line_delta > (video_config & PUAE_VIDEO_DOUBLELINE) ? 1 : 0)
+         && (retro_thisframe_first_drawn_line_delta > ((video_config & PUAE_VIDEO_DOUBLELINE) && retro_av_info_is_lace) ? 1 : 0
+          || retro_thisframe_last_drawn_line_delta  > ((video_config & PUAE_VIDEO_DOUBLELINE) && retro_av_info_is_lace) ? 1 : 0)
       )
       {
 #if 0
@@ -7718,9 +7824,9 @@ static void update_audiovideo(void)
 
          if (!retro_thisframe_counter)
          {
-            if (retro_thisframe_first_drawn_line_delta > (video_config & PUAE_VIDEO_DOUBLELINE) ? 1 : 0)
+            if (retro_thisframe_first_drawn_line_delta > ((video_config & PUAE_VIDEO_DOUBLELINE) && retro_av_info_is_lace) ? 1 : 0)
                retro_thisframe_first_drawn_line_start = (retro_thisframe_first_drawn_line_old > 0) ? retro_thisframe_first_drawn_line_old : retro_thisframe_first_drawn_line;
-            if (retro_thisframe_last_drawn_line_delta > (video_config & PUAE_VIDEO_DOUBLELINE) ? 1 : 0)
+            if (retro_thisframe_last_drawn_line_delta > ((video_config & PUAE_VIDEO_DOUBLELINE) && retro_av_info_is_lace) ? 1 : 0)
                retro_thisframe_last_drawn_line_start  = (retro_thisframe_last_drawn_line_old > 0) ? retro_thisframe_last_drawn_line_old : retro_thisframe_last_drawn_line;
          }
 
@@ -7728,8 +7834,17 @@ static void update_audiovideo(void)
           || retro_thisframe_last_drawn_line_start  != retro_thisframe_last_drawn_line)
             retro_thisframe_counter = 1;
 
-         /* Immediate mode */
-         if (!crop_delay)
+         /* Immediate mode, but not when interlaced */
+         if (!crop_delay && !retro_av_info_is_lace)
+            request_update_av_info = true;
+
+         /* Immediate centering if big enough jump */
+         if ((retro_thisframe_first_drawn_line_delta > 15)
+          || (retro_thisframe_last_drawn_line_delta  > 15 && retro_thisframe_last_drawn_line_delta < 115))
+            request_update_av_info = true;
+
+         /* Immediate centering if height remains the same or grows big enough */
+         if (retro_thisframe_height == retroh_crop || (!retro_thisframe_counter && retro_thisframe_height - retroh_crop > 15))
             request_update_av_info = true;
 
          /* Hasten the result with big enough difference in last line (last line for CD32 no disc) */
@@ -7744,6 +7859,10 @@ static void update_audiovideo(void)
             retro_thisframe_counter = 0;
             request_update_av_info  = false;
          }
+
+         /* Clear counter when immediate */
+         if (request_update_av_info)
+            retro_thisframe_counter = 0;
 
          retro_thisframe_first_drawn_line_old = retro_thisframe_first_drawn_line;
          retro_thisframe_last_drawn_line_old  = retro_thisframe_last_drawn_line;
@@ -7841,7 +7960,7 @@ static void update_audiovideo(void)
                && retro_max_diwstop  == (458 * width_multiplier) && retro_max_diwstop_old  == (449 * width_multiplier))
          {
             locked_video_horizontal = true;
-            log_cb(RETRO_LOG_INFO, "Horizontal centering hack for '%s' active.\n", "North & South PAL floppy");
+            log_cb(RETRO_LOG_INFO, "Horizontal centering hack for \"%s\" active.\n", "North & South PAL floppy");
          }
          /* North & South PAL WHDLoad */
          else if (retro_max_diwstop - retro_min_diwstart == (329 * width_multiplier)
@@ -7850,7 +7969,7 @@ static void update_audiovideo(void)
                && retro_max_diwstop  == (458 * width_multiplier) && retro_max_diwstop_old  == (449 * width_multiplier))
          {
             locked_video_horizontal = true;
-            log_cb(RETRO_LOG_INFO, "Horizontal centering hack for '%s' active.\n", "North & South PAL WHDLoad");
+            log_cb(RETRO_LOG_INFO, "Horizontal centering hack for \"%s\" active.\n", "North & South PAL WHDLoad");
          }
          /* North & South NTSC floppy */
          else if (retro_max_diwstop - retro_min_diwstart == (329 * width_multiplier)
@@ -7860,7 +7979,7 @@ static void update_audiovideo(void)
                && retro_max_diwstop  == (458 * width_multiplier) && retro_max_diwstop_old  == (449 * width_multiplier))
          {
             locked_video_horizontal = true;
-            log_cb(RETRO_LOG_INFO, "Horizontal centering hack for '%s' active.\n", "North & South NTSC floppy");
+            log_cb(RETRO_LOG_INFO, "Horizontal centering hack for \"%s\" active.\n", "North & South NTSC floppy");
          }
          /* North & South NTSC WHDLoad */
          else if (retro_max_diwstop - retro_min_diwstart == (329 * width_multiplier)
@@ -7869,7 +7988,7 @@ static void update_audiovideo(void)
                && (retro_max_diwstop == (449 * width_multiplier) || retro_max_diwstop == (458 * width_multiplier)) && (retro_max_diwstop_old == (447 * width_multiplier) || retro_max_diwstop_old == (449 * width_multiplier)))
          {
             locked_video_horizontal = true;
-            log_cb(RETRO_LOG_INFO, "Horizontal centering hack for '%s' active.\n", "North & South NTSC WHDLoad");
+            log_cb(RETRO_LOG_INFO, "Horizontal centering hack for \"%s\" active.\n", "North & South NTSC WHDLoad");
          }
          /* Chase HQ WHDLoad */
          else if (retro_thisframe_first_drawn_line == 50 && retro_thisframe_last_drawn_line == 249
@@ -7877,7 +7996,7 @@ static void update_audiovideo(void)
                && retro_max_diwstop  == (457 * width_multiplier) && retro_max_diwstop_old  == (449 * width_multiplier))
          {
             locked_video_horizontal = true;
-            log_cb(RETRO_LOG_INFO, "Horizontal centering hack for '%s' active.\n", "Chase HQ WHDLoad");
+            log_cb(RETRO_LOG_INFO, "Horizontal centering hack for \"%s\" active.\n", "Chase HQ WHDLoad");
          }
          /* Test Drive */
          else if (retro_thisframe_first_drawn_line ==  44 && retro_thisframe_last_drawn_line  == 243
@@ -7885,7 +8004,7 @@ static void update_audiovideo(void)
                && retro_max_diwstop  == (448 * width_multiplier) && retro_max_diwstop_old  == (449 * width_multiplier))
          {
             locked_video_horizontal = true;
-            log_cb(RETRO_LOG_INFO, "Horizontal centering hack for '%s' active.\n", "Test Drive");
+            log_cb(RETRO_LOG_INFO, "Horizontal centering hack for \"%s\" active.\n", "Test Drive");
          }
          /* Test Drive II */
          else if (retro_thisframe_first_drawn_line == 160 && retro_thisframe_last_drawn_line  == 243
@@ -7893,7 +8012,7 @@ static void update_audiovideo(void)
                && retro_max_diwstop  == (448 * width_multiplier) && retro_max_diwstop_old  == (449 * width_multiplier))
          {
             locked_video_horizontal = true;
-            log_cb(RETRO_LOG_INFO, "Horizontal centering hack for '%s' active.\n", "Test Drive II");
+            log_cb(RETRO_LOG_INFO, "Horizontal centering hack for \"%s\" active.\n", "Test Drive II");
          }
          /* Toki */
          else if (retro_thisframe_first_drawn_line == 60 && retro_thisframe_last_drawn_line == 259
@@ -7901,7 +8020,7 @@ static void update_audiovideo(void)
                && retro_max_diwstop  == (401 * width_multiplier) && retro_max_diwstop_old  == (465 * width_multiplier))
          {
             locked_video_horizontal = true;
-            log_cb(RETRO_LOG_INFO, "Horizontal centering hack for '%s' active.\n", "Toki");
+            log_cb(RETRO_LOG_INFO, "Horizontal centering hack for \"%s\" active.\n", "Toki");
          }
 #endif
 
@@ -7935,6 +8054,7 @@ static bool retro_update_av_info(void)
    bool isntsc                 = retro_av_info_is_ntsc;
    bool islace                 = retro_av_info_is_lace;
    bool change_timing          = retro_av_info_change_timing;
+   bool change_timing_init     = retro_av_info_change_timing;
    bool change_geometry        = retro_av_info_change_geometry;
    float hz                    = currprefs.chipset_refreshrate;
 
@@ -7997,17 +8117,6 @@ static bool retro_update_av_info(void)
       video_config_geometry = video_config;
    }
 
-   /* Interlace detecter */
-   if (opt_video_vresolution_auto)
-   {
-      if (update_vresolution(true))
-      {
-         request_init_custom_timer = 2;
-         set_config_changed();
-         return false;
-      }
-   }
-
    /* Aspect ratio override changes only the temporary video config. Don't change at the same time with region change. */
    if (!change_timing && video_config_aspect != 0)
    {
@@ -8063,50 +8172,82 @@ static bool retro_update_av_info(void)
    }
 
    /* Geometry dimensions */
-   switch (video_config_geometry)
-   {
-      case PUAE_VIDEO_PAL_LO:
-         retrow = PUAE_VIDEO_WIDTH / 2;
-         retroh = PUAE_VIDEO_HEIGHT_PAL / 2;
-         break;
-      case PUAE_VIDEO_PAL_HI:
-         retrow = PUAE_VIDEO_WIDTH;
-         retroh = PUAE_VIDEO_HEIGHT_PAL / 2;
-         break;
-      case PUAE_VIDEO_PAL_HI_DL:
-         retrow = PUAE_VIDEO_WIDTH;
-         retroh = PUAE_VIDEO_HEIGHT_PAL;
-         break;
-      case PUAE_VIDEO_PAL_SUHI:
-         retrow = PUAE_VIDEO_WIDTH * 2;
-         retroh = PUAE_VIDEO_HEIGHT_PAL / 2;
-         break;
-      case PUAE_VIDEO_PAL_SUHI_DL:
-         retrow = PUAE_VIDEO_WIDTH * 2;
-         retroh = PUAE_VIDEO_HEIGHT_PAL;
-         break;
+   retro_set_geometry(video_config_geometry, false);
+   video_config &= ~PUAE_VIDEO_QUADLINE;
 
-      case PUAE_VIDEO_NTSC_LO:
-         retrow = PUAE_VIDEO_WIDTH / 2;
-         retroh = PUAE_VIDEO_HEIGHT_NTSC / 2;
-         break;
-      case PUAE_VIDEO_NTSC_HI:
-         retrow = PUAE_VIDEO_WIDTH;
-         retroh = PUAE_VIDEO_HEIGHT_NTSC / 2;
-         break;
-      case PUAE_VIDEO_NTSC_HI_DL:
-         retrow = PUAE_VIDEO_WIDTH;
-         retroh = PUAE_VIDEO_HEIGHT_NTSC;
-         break;
-      case PUAE_VIDEO_NTSC_SUHI:
-         retrow = PUAE_VIDEO_WIDTH * 2;
-         retroh = PUAE_VIDEO_HEIGHT_NTSC / 2;
-         break;
-      case PUAE_VIDEO_NTSC_SUHI_DL:
-         retrow = PUAE_VIDEO_WIDTH * 2;
-         retroh = PUAE_VIDEO_HEIGHT_NTSC;
-         break;
+   /* Interlace detector */
+   if (opt_video_vresolution_auto)
+   {
+      if (update_vresolution(true))
+      {
+         request_init_custom_timer = 2;
+         set_config_changed();
+         return false;
+      }
    }
+
+   if (retro_doublescan || hz > 70)
+   {
+      video_productivity = true;
+      if (retro_doublescan)
+         retrow = PUAE_VIDEO_WIDTH_PROD;
+      if (hz > 70) /* EURO36 & SUPER72 */
+         retrow = retro_max_diwstop - retro_min_diwstart;
+      /* SUPER72 overscan */
+      if (retrow == 448)
+         retrow = 400;
+
+      switch (maxvpos)
+      {
+         /* MULTISCAN */
+         case 525: case 506: retroh = 480; break;
+         case 450: case 426: retroh = 400; break;
+         case 343: case 328: retroh = 300; break;
+         case 216: case 217: retroh = 200; break;
+
+         /* AGA DBL */
+         case 590: case 574: retroh = 512; break;
+         case 493: case 478: retroh = 400; break;
+      }
+
+      /* Forced doubleline and productivity non-doublescan.. */
+      if (!opt_video_vresolution_auto && (video_config & PUAE_VIDEO_DOUBLELINE))
+      {
+         if ((video_config & PUAE_VIDEO_SUPERHIRES) && retrow < PUAE_VIDEO_WIDTH_PROD * 2 && retrow != PUAE_VIDEO_WIDTH_S72 && retrow != PUAE_VIDEO_WIDTH_S72 * 2)
+            retrow *= 2;
+         if (!retro_doublescan && retroh < PUAE_VIDEO_WIDTH_S72)
+            retroh *= 2;
+         else if (retro_doublescan && islace)
+         {
+            retroh *= 2;
+            video_config |= PUAE_VIDEO_QUADLINE;
+         }
+      }
+      else if (islace && (video_config & PUAE_VIDEO_DOUBLELINE))
+      {
+         retroh *= 2;
+         if (retro_doublescan)
+            video_config |= PUAE_VIDEO_QUADLINE;
+      }
+
+      if (retrow == PUAE_VIDEO_WIDTH_S72 && retroh == PUAE_VIDEO_HEIGHT_S72 * 2)
+         video_config |= PUAE_VIDEO_QUADLINE;
+
+      /* Always set actual dimension */
+      defaultw = retrow_crop = retrow;
+      defaulth = retroh_crop = retroh;
+
+      /* Make sure init_custom() is ready */
+      if (request_init_custom_timer && change_timing)
+         request_init_custom_timer++;
+   }
+   else
+      video_productivity = false;
+
+   /* SUPER72 switch from SuperHigh-laced to High-nonlaced breaks if init_custom() is pending,
+      and DBL switch breaks if returned early.. */
+   if (video_productivity && !retro_doublescan && request_init_custom_timer > 1)
+      return false;
 
    /* Width multiplier */
    if (video_config & PUAE_VIDEO_SUPERHIRES)
@@ -8151,40 +8292,6 @@ static bool retro_update_av_info(void)
          && video_config & PUAE_VIDEO_PAL
          && video_config_aspect == PUAE_VIDEO_NTSC)
       opt_statusbar_position_offset += (PUAE_VIDEO_HEIGHT_PAL - PUAE_VIDEO_HEIGHT_NTSC) / ((video_config_geometry & PUAE_VIDEO_DOUBLELINE) ? 1 : 2);
-
-   /* Compensate for interlace, aargh */
-   if (opt_statusbar_position >= 0 && !real_ntsc && !fake_ntsc)
-   {
-      if (video_config_geometry & PUAE_VIDEO_DOUBLELINE)
-      {
-         if (video_config_geometry & PUAE_VIDEO_PAL)
-         {
-            opt_statusbar_position -= 0 - (1 * islace);
-            opt_statusbar_position_offset += 2 + (1 * islace);
-         }
-         else
-         {
-            opt_statusbar_position -= 2 + (1 * islace);
-            opt_statusbar_position_offset += 2 + (1 * islace);
-         }
-      }
-      else
-      {
-         if (video_config_geometry & PUAE_VIDEO_PAL)
-         {
-            opt_statusbar_position = 0;
-            opt_statusbar_position_offset += 1 + islace;
-         }
-         else
-         {
-            opt_statusbar_position -= 1 + islace;
-            opt_statusbar_position_offset += 1 + islace;
-         }
-      }
-
-      if (opt_statusbar_position < 0)
-         opt_statusbar_position = 0;
-   }
 
 #if 0
    printf("statusbar:%3d old:%3d offset:%3d, defaulth:%d retroh:%d\n", opt_statusbar_position, opt_statusbar_position_old, opt_statusbar_position_offset, defaulth, retroh);
@@ -8253,8 +8360,12 @@ static bool retro_update_av_info(void)
          retroh_crop = (retroh_crop < 200) ? 200 : retroh_crop;
 
          /* Allow full PAL height with NTSC PAR */
-         if (defaulth > retroh && retroh_crop > retroh * (video_config & PUAE_VIDEO_DOUBLELINE) ? 2 : 1)
+         if (defaulth > retroh && retroh_crop > retroh * (video_config & PUAE_VIDEO_DOUBLELINE) && !retro_doublescan ? 2 : 1)
             retroh = defaulth;
+
+         /* Laced doublescan crop limit */
+         if (retro_doublescan && islace)
+            retroh_crop = retroh;
          break;
       default:
          retrow_crop = retrow;
@@ -8314,24 +8425,31 @@ static bool retro_update_av_info(void)
       }
 
       /* If previous crop height was in double line */
-      if (retroh_crop > retroh)
+      if (!video_productivity && retroh_crop > retroh)
          retroh_crop /= 2;
 
       retroh_crop = (retroh_crop < 200) ? 200 : retroh_crop;
-      retroh_crop *= (video_config & PUAE_VIDEO_DOUBLELINE) ? 2 : 1;
+      retroh_crop *= (video_config & PUAE_VIDEO_DOUBLELINE) && !retro_doublescan ? 2 : 1;
       if (retroh_crop > retroh)
          retroh_crop = retroh;
 
       retrow_crop = (retrow_crop < 320) ? 320 : retrow_crop;
+      /* Even widths only */
+      retrow_crop = (int)(retrow_crop / 2) * 2;
       retrow_crop *= width_multiplier;
       if (retrow_crop > retrow)
          retrow_crop = retrow;
    }
 
-   /* Must do full av_info update if max width grows */
+   /* Must do full av_info update if max size grows */
    if (retrow > retrow_max)
    {
       retrow_max = retrow;
+      change_timing = true;
+   }
+   if (retroh > retroh_max)
+   {
+      retroh_max = retroh;
       change_timing = true;
    }
 
@@ -8383,6 +8501,10 @@ static bool retro_update_av_info(void)
    else if (change_geometry)
       environ_cb(RETRO_ENVIRONMENT_SET_GEOMETRY, &new_av_info);
 
+   /* Timing changes require new SNDRATE calculation */
+   if (change_timing || (video_config_allow_hz_change > 1 && change_timing_init))
+      compute_vsynctime();
+
    /* Remember aspect ratio for update skip */
    if (change_timing || change_geometry)
       aspect_ratio = new_av_info.geometry.aspect_ratio;
@@ -8414,6 +8536,8 @@ static bool retro_update_av_info(void)
 
 void retro_run(void)
 {
+   static uint8_t old_frame = 0;
+
    /* Core options */
    bool updated = false;
    if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE, &updated) && updated)
@@ -8423,43 +8547,18 @@ void retro_run(void)
    input_poll_cb();
    retro_poll_event();
 
-   /* 4.9.0 caused startup audio rate miscalculation without this hack.. (?!)
-    * Rather this than doing `lof_display = lof_store;` in `VPOSW()` inside `lof_changing`
-    * Or maybe not.. */
-   if (0 && !request_init_custom_timer && startup_init_custom_timer > 0)
-   {
-      startup_init_custom_timer--;
-      if (startup_init_custom_timer == 0)
-         init_custom();
-   }
-
-   /* Refresh CPU prefs */
-   if (request_check_prefs_timer > 0)
-   {
-      request_check_prefs_timer--;
-      if (request_check_prefs_timer == 0)
-      {
-         update_variables();
-         set_config_changed();
-         device_check_config();
-      }
-   }
-
-   /* Prevent serialize on startup frames */
-   if (save_state_grace > 0)
-      save_state_grace--;
-
    /* Check if a restart is required */
    if (restart_pending)
    {
       restart_pending = 0;
       libretro_do_restart(sizeof(uae_argv)/sizeof(*uae_argv), uae_argv);
       /* Re-run emulation first pass */
+      libretro_runloop_active = false;
       restart_pending = m68k_go(1, 0);
-      return;
    }
 
-   /* Resume emulation for 1 frame */
+   /* Resume emulation for 1 frame (may_quit, resume) */
+   libretro_runloop_active = true;
    restart_pending = m68k_go(1, 1);
    retro_now += 1000000 / retro_refresh;
 
@@ -8483,11 +8582,15 @@ void retro_run(void)
    {
       request_reset_drawing = false;
       reset_drawing();
+
+      if (request_init_custom_timer > 1)
+         old_frame++;
    }
 
    /* Dynamic resolution changing requires a frame breather after reset_drawing() */
    if (request_init_custom_timer > 0)
    {
+      old_frame++;
       request_init_custom_timer--;
       if (request_init_custom_timer == 0)
          init_custom();
@@ -8519,20 +8622,11 @@ void retro_run(void)
    if ((!retro_statusbar && opt_statusbar & STATUSBAR_MESSAGES && statusbar_message_timer) || retro_statusbar)
       print_statusbar();
 
-   /* Maximum 288p/576p PAL shenanigans:
-    * Mask the last line(s), since UAE does not refresh the last line,
-    * and even internal OSD leaves trails */
-   if (video_config & PUAE_VIDEO_PAL)
-   {
-      if (video_config & PUAE_VIDEO_DOUBLELINE)
-         draw_hline(0, 574, retrow, 2, 0);
-      else
-         draw_hline(0, 287, retrow, 1, 0);
-   }
-
-upload:
-   video_cb(retro_bmp + retro_bmp_offset, retrow_crop, retroh_crop, retrow << (pix_bytes >> 1));
+   video_cb((old_frame) ? NULL : retro_bmp + retro_bmp_offset, retrow_crop, retroh_crop, retrow << (pix_bytes >> 1));
    upload_output_audio_buffer();
+
+   if (old_frame)
+      old_frame--;
 
    if (request_reset_soft)
       retro_reset_soft();
@@ -8590,8 +8684,6 @@ bool retro_load_game(const struct retro_game_info *info)
 
    /* Run emulation first pass */
    restart_pending = m68k_go(1, 0);
-   /* > We are now ready to enter the run loop */
-   libretro_runloop_active = 1;
 
    /* Force check for redirected save disks */
    floppy_open_redirect(-1);
@@ -8601,34 +8693,9 @@ bool retro_load_game(const struct retro_game_info *info)
     *   since we use memory based save states */
    savestate_fname[0] = '\0';
 
-   /* > Prevent saving for a few frames to disable
-    *   run-ahead and prevent startup crashing */
-   save_state_grace = 2;
-
-   /* > Get save state size
-    *   Here we use initial size + 5%
-    *   Should be sufficient in all cases
-    * NOTE: It would be better to calculate the
-    * state size based on current config parameters,
-    * but while
-    *   - currprefs.chipmem_size
-    *   - currprefs.bogomem_size
-    *   - currprefs.fastmem_size
-    * account for *most* of the size, there are
-    * simply too many other factors to rely on this
-    * alone (i.e. mem size + 5% is fine in most cases,
-    * but if the user supplies a custom uae config file
-    * then this is not adequate at all). Untangling the
-    * full set of values that are recorded is beyond
-    * my patience... */
-   struct zfile *state_file = save_state("libretro", 0);
-
-   if (state_file)
-   {
-      save_state_file_size  = (size_t)zfile_size(state_file);
-      save_state_file_size += (size_t)(((float)save_state_file_size * 0.05f) + 0.5f);
-      zfile_fclose(state_file);
-   }
+   /* Estimate necessary save state size */
+   save_state_file_size = currprefs.chipmem.size + currprefs.bogomem.size + currprefs.fastmem[0].size + currprefs.z3fastmem[0].size;
+   save_state_file_size += 128 * 1000;
 
    struct retro_memory_descriptor memdesc[] = {
       {RETRO_MEMDESC_SYSTEM_RAM, chipmem_bank.baseaddr, 0, 0, 0, 0, chipmem_bank.allocated_size, "CHIP"},
@@ -8667,9 +8734,16 @@ void retro_unload_game(void)
       retro_deserialize_file = NULL;
    }
 
-   leave_program();
+   if (dc)
+      dc_reset(dc);
 
-   libretro_runloop_active = 0;
+   cpu_cycle_exact_force = false;
+   automatic_sound_filter_type_update_timer = 0;
+   fake_ntsc = false;
+   real_ntsc = false;
+   forced_video = -1;
+   locked_video_horizontal = false;
+   opt_aspect_ratio_locked = false;
 }
 
 unsigned retro_get_region(void)
@@ -8695,7 +8769,7 @@ bool retro_serialize(void *data_, size_t size)
    struct zfile *state_file = save_state("libretro", (uae_u64)save_state_file_size);
    bool success = false;
 
-   if (state_file && !save_state_grace)
+   if (state_file)
    {
       uae_s64 state_file_size = zfile_size(state_file);
 
@@ -8715,13 +8789,6 @@ bool retro_serialize(void *data_, size_t size)
 
 bool retro_unserialize(const void *data_, size_t size)
 {
-   /* TODO: When attempting to use runahead, CD32
-    * and WHDLoad content will hang on boot. It seems
-    * we cannot restore a state until the system has
-    * passed some level of initialisation - but the
-    * point at which a restore becomes 'safe' is
-    * unknown (for CD32 content, for example, we have
-    * to wait ~300 frames before runahead can be enabled) */
    bool success = false;
 
    /* Cannot restore state while any 'savestate'
@@ -8736,11 +8803,6 @@ bool retro_unserialize(const void *data_, size_t size)
     *   unknown error */
    if (!savestate_state)
    {
-#if 0
-      /* Savestates also save CPU prefs, therefore force core options, but skip it for now */
-      request_check_prefs_timer = 4;
-#endif
-
       if (retro_deserialize_file)
       {
          zfile_fclose(retro_deserialize_file);
@@ -8776,7 +8838,7 @@ bool retro_unserialize(const void *data_, size_t size)
              *   us call m68k_go() without accessing frontend
              *   features - specifically, it disables the audio
              *   callback functionality */
-            libretro_runloop_active = 0;
+            libretro_runloop_active = false;
             while (savestate_state && (frame_counter < max_frames))
             {
                /* Note that retro_deserialize_file will be
@@ -8785,7 +8847,7 @@ bool retro_unserialize(const void *data_, size_t size)
                restart_pending = m68k_go(1, 1);
                frame_counter++;
             }
-            libretro_runloop_active = 1;
+            libretro_runloop_active = true;
 
             /* If the above while loop times out, then
              * everything is completely broken. We cannot

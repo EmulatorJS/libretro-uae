@@ -33,10 +33,19 @@ extern int retro_thisframe_first_drawn_line;
 extern int retro_thisframe_last_drawn_line;
 extern int retro_min_diwstart;
 extern int retro_max_diwstop;
+extern int retro_doublescan;
+extern bool video_productivity;
 extern bool retro_av_info_is_lace;
+extern bool libretro_frame_end;
+extern bool libretro_runloop_active;
+extern void libretro_do_restart(int argc, TCHAR **argv);
 
 /* File helpers functions */
 #define RETRO_PATH_MAX 512
+
+#ifndef MAX_FLOPPY_DRIVES
+#define MAX_FLOPPY_DRIVES 4
+#endif
 
 #ifdef WIN32
 #define DIR_SEP_STR "\\"
@@ -131,7 +140,9 @@ enum EMU_CONFIG
 /* Kickstarts */
 enum retro_kickstart_ids
 {
-   A500_KS12_ROM = 0,
+   A1000_KS11_NTSC_ROM = 0,
+   A1000_KS11_PAL_ROM,
+   A500_KS12_ROM,
    A500_KS13_ROM,
    A500_KS204_ROM,
    A600_KS205_ROM,
@@ -156,6 +167,17 @@ typedef struct
 
 static retro_kickstarts uae_kickstarts[15] =
 {
+   {A1000_KS11_NTSC_ROM,
+         "kick31034.A1000",
+         "amiga-os-110-ntsc.rom",
+         "",
+         "Kickstart v1.1 rev 31.34 (1985)(Commodore)(A1000)(NTSC).rom"},
+   {A1000_KS11_PAL_ROM,
+         "kick32034.A1000",
+         "amiga-os-110-pal.rom",
+         "",
+         "Kickstart v1.1 rev 32.34 (1986)(Commodore)(A1000)(PAL).rom"},
+
    {A500_KS12_ROM,
          "kick33180.A500",
          "amiga-os-120.rom",
@@ -237,7 +259,9 @@ struct puae_cart_info
 #define PUAE_VIDEO_NTSC         0x02
 #define PUAE_VIDEO_HIRES        0x04
 #define PUAE_VIDEO_SUPERHIRES   0x08
-#define PUAE_VIDEO_DOUBLELINE   0x10
+#define PUAE_VIDEO_1x1          0x10
+#define PUAE_VIDEO_DOUBLELINE   0x20
+#define PUAE_VIDEO_QUADLINE     0x40
 
 #define PUAE_VIDEO_PAL_LO       PUAE_VIDEO_PAL
 #define PUAE_VIDEO_PAL_HI       PUAE_VIDEO_PAL|PUAE_VIDEO_HIRES
@@ -251,18 +275,21 @@ struct puae_cart_info
 #define PUAE_VIDEO_NTSC_SUHI    PUAE_VIDEO_NTSC|PUAE_VIDEO_SUPERHIRES
 #define PUAE_VIDEO_NTSC_SUHI_DL PUAE_VIDEO_NTSC|PUAE_VIDEO_SUPERHIRES|PUAE_VIDEO_DOUBLELINE
 
-#define PUAE_VIDEO_HZ_PAL       49.9204101562500000f
-#define PUAE_VIDEO_HZ_NTSC      59.8260993957519531f
+#define PUAE_VIDEO_HZ_PAL       49.920410f
+#define PUAE_VIDEO_HZ_NTSC      59.826099f
 #define PUAE_VIDEO_WIDTH        720
-#define PUAE_VIDEO_HEIGHT_PAL   576
-#define PUAE_VIDEO_HEIGHT_NTSC  480
+#define PUAE_VIDEO_HEIGHT_PAL   574
+#define PUAE_VIDEO_HEIGHT_NTSC  484
+#define PUAE_VIDEO_WIDTH_PROD   640
+#define PUAE_VIDEO_WIDTH_S72    400
+#define PUAE_VIDEO_HEIGHT_S72   300
 
 /* Libretro video */
 #define EMULATOR_DEF_WIDTH      PUAE_VIDEO_WIDTH
 #define EMULATOR_DEF_HEIGHT     PUAE_VIDEO_HEIGHT_PAL
-#define EMULATOR_MAX_WIDTH      (EMULATOR_DEF_WIDTH * 2)
+#define EMULATOR_MAX_WIDTH      EMULATOR_DEF_WIDTH * 2
 #define EMULATOR_MAX_HEIGHT     EMULATOR_DEF_HEIGHT
-#define RETRO_BMP_SIZE          (EMULATOR_DEF_WIDTH * EMULATOR_DEF_HEIGHT * 4) /* 4x is big enough for 24-bit SuperHires double line */
+#define RETRO_BMP_SIZE          EMULATOR_MAX_WIDTH * EMULATOR_MAX_HEIGHT * 4 /* 4x is big enough for 24-bit SuperHires double line */
 
 extern unsigned short int retro_bmp[RETRO_BMP_SIZE];
 extern uint8_t pix_bytes;
@@ -274,6 +301,11 @@ extern unsigned short int retrox_crop;
 extern unsigned short int retroy_crop;
 extern unsigned short int video_config;
 extern unsigned short int video_config_geometry;
+
+#define RESOLUTION_AUTO_NONE       0
+#define RESOLUTION_AUTO_LORES      1
+#define RESOLUTION_AUTO_HIRES      2
+#define RESOLUTION_AUTO_SUPERHIRES 3
 
 #define CROP_NONE            0
 #define CROP_MINIMUM         1

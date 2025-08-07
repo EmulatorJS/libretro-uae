@@ -1,6 +1,6 @@
 # PUAE LIBRETRO
 
-Based on WinUAE 5.0.0, git commit `975a167c7636d563db1c8b3292f690b6f30e71d2`
+Based on WinUAE 5.3.0, git commit `5b86c94b9f9161f58340ed15059e4ab61cd0af3b`
 
 ## Default controls
 
@@ -80,6 +80,8 @@ The core has a somewhat compatible built-in AROS Kickstart, which is used as a f
 
 | System     | Version                       | Filename               | Amiga Forever                 | Size      | MD5                              |
 |------------|-------------------------------|------------------------|-------------------------------|----------:|----------------------------------|
+| A1000      | KS v1.1 rev 31.034 NTSC       | **kick31034.A1000**    | **amiga-os-110-ntsc.rom**     |   262 144 | 0b8442c311caa54fb12ec88eaaa9facf |
+| A1000      | KS v1.1 rev 32.034 PAL        | **kick32034.A1000**    | **amiga-os-110-pal.rom**      |   262 144 | 1fa1f93d3d7b51271dd1356b8b2b45a9 |
 | A500-A2000 | KS v1.2 rev 33.180            | **kick33180.A500**     | **amiga-os-120.rom**          |   262 144 | 85ad74194e87c08904327de1a9443b7a |
 | A500-A2000 | KS v1.3 rev 34.005            | **kick34005.A500**     | **amiga-os-130.rom**          |   262 144 | 82a21c1890cae844b3df741f2762d48d |
 | A500+      | KS v2.04 rev 37.175           | **kick37175.A500**     | **amiga-os-204.rom**          |   524 288 | dc10d7bdd1b6f450773dfb558477c230 |
@@ -109,7 +111,7 @@ These parameters control the output resolution of the core (default bolded):
 | Video Standard       | **PAL 50Hz**, NTSC 60Hz                 |
 | Video Resolution     | **Automatic**, Low, High, Super-High    |
 | Video Line Mode      | **Automatic**, Single Line, Double Line |
-| Aspect Ratio         | **Automatic**, PAL, NTSC                |
+| Aspect Ratio         | **Automatic**, PAL, NTSC, 1:1           |
 
 With these settings all the standard resolutions are available:
 
@@ -202,6 +204,12 @@ Compatible CAPSIMG libraries for Windows, macOS and Linux can be found at [http:
 Compatible CAPSIMG libraries for Android can be found at [https://github.com/rsn8887/capsimg/releases/latest](https://github.com/rsn8887/capsimg/releases/latest)
 
 Please be aware that there are 32-bits and 64-bits versions of the library. Choose the one corresponding to your RetroArch executable.
+
+#### Android
+
+Android does not allow loading dynamic libraries from `system` directory, but it can load from the executable directory, which requires root access.
+
+Android does allow loading from the core directory, which means you can and have to import/install `capsimg.so` as a core to use CAPSIMG without root access.
 
 ### ZIP support
 
@@ -319,10 +327,15 @@ Libretro LED interface is presented in the following order:
 
 Pre-installed WHDLoad LHA archives can be launched directly without any kind of manual preparing and downloading.
 
-- WHDLoad helper files (Directory or HDF) will be generated to `saves`, `WHDLoad.prefs` will be generated to `system`
-- `WHDLoad.prefs` & `WHDLoad.key` & `rom.key` will be copied from `system` to the helper image
-- Kickstarts will be copied automatically to the helper image
-- To update `WHDLoad:` simply delete the directory or the HDF
+- WHDLoad helper files (Directory or HDF) will be generated to `saves`, `WHDLoad.prefs` will be generated to `system`.
+- `WHDLoad.prefs` & `WHDLoad.key` & `rom.key` will be copied from `system` to the helper image.
+- Kickstarts will be copied automatically to the helper image.
+- Saves are redirected to `WHDSaves:`.
+- To update `WHDLoad:` simply delete the directory or the HDF.
+
+- WHDLoad quit key is hardcoded to unused `$2B` = `AK_NUMBERSIGN` = `RETROK_HASH` which does not exist in modern keyboards.
+    - Keyboard shortcut: LCtrl + Backslash
+    - Virtual keyboard shortcut: Shifted RESET button
 
 #### Overrides at startup
 
@@ -349,17 +362,16 @@ Pre-installed WHDLoad LHA archives can be launched directly without any kind of 
 - `WHDLoad.key` will be copied from `system` if it does not exist in the helper image.
 - `WHDLoad.prefs` will be copied from `system` on every run.
 - Supports a file named `custom` in the root of the game.hdf for passing specific WHDLoad parameters when the slave does not support the config screen or when it should be the default, for example `Custom1=1`. It always overrides `WHDLoad.prefs`.
-    - ~~The easiest way to create `custom` is to quit WHDLoad (default Numpad*), type `echo custom1=1 >custom`, press enter and reboot the Amiga.~~
-    - Script called `MkCustom` for simplest `custom` file handling. Launches after quitting WHDLoad.
+    - Use `MkCustom` script for simplest `custom` file handling. Launches after quitting WHDLoad.
     - `MkCustom` will create a slave-based `custom_$SLAVE` in `WHDSaves:`. Essential with readonly images.
 - Supports a file named `load` in the root of the game.hdf which overrides the whole launch command, aimed at non-WHDLoad installs.
 - If `.slave` is not in the root of the HDF, it will also be searched under the first found directory.
-- Saves will be redirected to a separate `WHDSaves.hdf`. Repo provides an empty 4MiB HDF.
+- Saves will be redirected to `WHDSaves.hdf` when using legacy HDF mode.
 
 #### Minor changes
 
 - Both HDF-files (`WHDLoad.hdf` & `WHDSaves.hdf`) can be located in either RA `system` or `saves`.
-- "WHDLoad Support" core option does not need to be disabled when launching a non-WHDLoad HDF which has `S/startup-sequence`.
+- "WHDLoad Support" core option does not need to be disabled when launching a non-WHDLoad HDF which has `S/Startup-Sequence`.
 - `NTSC` parameter can be used with WHDLoad.
 - Included `ClickNot` for suppressing drive clicking when drive sound emulation is enabled.
 - Included `MEmacs` for file editing (`custom` & `load`).
@@ -370,6 +382,8 @@ Pre-installed WHDLoad LHA archives can be launched directly without any kind of 
 
 #### Latest changes
 
+- Included `SetPatch` for better compatibility.
+- Updated WHDLoad to 19.1 (2024-12-07).
 - Updated WHDLoad to 18.9 (2023-05-04).
 - Downgraded WHDLoad to 18.6 due to a save related bug in 18.7.
 - Updated WHDLoad to the latest one (18.7 2021-10-23).

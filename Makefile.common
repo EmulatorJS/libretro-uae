@@ -44,7 +44,6 @@ SOURCES_C += \
 	$(EMU)/calc.c \
 	$(EMU)/caps/caps.c \
 	$(EMU)/caps/uae_dlopen.c \
-	$(EMU)/casablanca.c \
 	$(EMU)/cd32_fmv.c \
 	$(EMU)/cd32_fmv_genlock.c \
 	$(EMU)/cda_play.c \
@@ -82,6 +81,7 @@ SOURCES_C += \
 	$(EMU)/disk.c \
 	$(EMU)/diskutil.c \
 	$(EMU)/dongle.c \
+	$(EMU)/draco.c \
 	$(EMU)/drawing.c \
 	$(EMU)/driveclick.c \
 	$(EMU)/ethernet.c \
@@ -144,6 +144,8 @@ SOURCES_C += \
 	$(EMU)/x86.c \
 	$(EMU)/zfile.c \
 	$(EMU)/zfile_archive.c \
+	$(EMU)/dsp3210/dsp_glue.c \
+	$(EMU)/dsp3210/DSP3210_emulation.c \
 	$(EMU)/softfloat/softfloat.c \
 	$(EMU)/softfloat/softfloat_decimal.c \
 	$(EMU)/softfloat/softfloat_fpsp.c
@@ -256,9 +258,10 @@ SOURCES_C += \
 endif
 
 ifeq ($(HAVE_CHD), 1)
-	CFLAGS += -DWITH_CHD
+	CFLAGS += -DWITH_CHD -DZSTD_DISABLE_ASM
 	INCFLAGS += \
-		-I$(DEPS_DIR)/libchdr/include
+		-I$(DEPS_DIR)/libchdr/include \
+		-I$(DEPS_DIR)/zstd/lib \
 
 	SOURCES_C += \
 		$(DEPS_DIR)/7zip/LzFind.c \
@@ -267,7 +270,17 @@ ifeq ($(HAVE_CHD), 1)
 		$(DEPS_DIR)/libchdr/src/libchdr_cdrom.c \
 		$(DEPS_DIR)/libchdr/src/libchdr_chd.c \
 		$(DEPS_DIR)/libchdr/src/libchdr_flac.c \
-		$(DEPS_DIR)/libchdr/src/libchdr_huffman.c
+		$(DEPS_DIR)/libchdr/src/libchdr_huffman.c \
+		$(DEPS_DIR)/zstd/lib/common/entropy_common.c \
+		$(DEPS_DIR)/zstd/lib/common/error_private.c \
+		$(DEPS_DIR)/zstd/lib/common/fse_decompress.c \
+		$(DEPS_DIR)/zstd/lib/common/zstd_common.c \
+		$(DEPS_DIR)/zstd/lib/common/xxhash.c \
+		$(DEPS_DIR)/zstd/lib/decompress/huf_decompress.c \
+		$(DEPS_DIR)/zstd/lib/decompress/zstd_ddict.c \
+		$(DEPS_DIR)/zstd/lib/decompress/zstd_decompress.c \
+		$(DEPS_DIR)/zstd/lib/decompress/zstd_decompress_block.c \
+
 endif
 
 GIT_VERSION := " $(shell git rev-parse --short HEAD || echo unknown)"
