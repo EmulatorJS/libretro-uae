@@ -1790,11 +1790,7 @@ static bool audio_state_channel2 (int nr, bool perfin)
 			// We are still in state=2/3 and program is going to re-enable
 			// DMA. Force state to zero to prevent CPU timed DMA wait
 			// routines in common tracker players to lose notes.
-#ifdef __LIBRETRO__
-			if (usehacks()) {
-#else
 			if (usehacks() && (currprefs.cachesize || (regs.instruction_cnt - cdp->dmaofftime_cpu_cnt) >= 60)) {
-#endif
 				if (warned >= 0) {
 					warned--;
 					write_log(_T("Audio %d DMA wait hack ENABLED. OFF=%08x, ON=%08x, PER=%d\n"), nr, cdp->dmaofftime_pc, M68K_GETPC, cdp->evtime / CYCLE_UNIT);
